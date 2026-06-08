@@ -188,6 +188,7 @@ QSpinBox, QDoubleSpinBox {
     border: 1px solid #dee0e3;
     border-radius: 8px;
     padding: 8px 12px;
+    padding-right: 36px;
     font-size: 13px;
 }
 
@@ -201,33 +202,48 @@ QSpinBox:hover, QDoubleSpinBox:hover {
 
 QSpinBox::up-button, QDoubleSpinBox::up-button {
     background-color: #f5f6f7;
+    border: none;
     border-left: 1px solid #e5e6eb;
+    border-bottom: 1px solid #e5e6eb;
     border-top-right-radius: 7px;
     width: 28px;
+    height: 50%;
+    subcontrol-origin: border;
+    subcontrol-position: top right;
 }
 
 QSpinBox::down-button, QDoubleSpinBox::down-button {
     background-color: #f5f6f7;
+    border: none;
     border-left: 1px solid #e5e6eb;
     border-bottom-right-radius: 7px;
     width: 28px;
+    height: 50%;
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
 }
 
 QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
 QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
-    background-color: #3370ff;
+    background-color: #e8e9eb;
 }
 
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-bottom: 5px solid #1f2329;
+    width: 10px;
+    height: 10px;
+    image: none;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-bottom: 6px solid #646a73;
 }
 
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #1f2329;
+    width: 10px;
+    height: 10px;
+    image: none;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #646a73;
 }
 
 /* ========== 下拉框 ========== */
