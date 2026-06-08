@@ -310,6 +310,58 @@ class MainWindow(QMainWindow):
 
         right_layout.addWidget(preprocess_group)
 
+        # 转场效果组
+        transition_group = QGroupBox("转场效果")
+        transition_layout = QVBoxLayout(transition_group)
+
+        # 转场类型
+        trans_type_layout = QHBoxLayout()
+        trans_type_layout.addWidget(QLabel("转场类型:"))
+
+        self.transition_combo = QComboBox()
+        self.transition_combo.addItems([
+            "无转场",
+            "淡入淡出 (fade)",
+            "溶解 (dissolve)",
+            "向左擦除 (wipe_left)",
+            "向右擦除 (wipe_right)",
+            "向左滑动 (slide_left)",
+            "向右滑动 (slide_right)",
+            "向左平滑 (smooth_left)",
+            "向右平滑 (smooth_right)",
+            "圆形打开 (circle_open)",
+            "圆形关闭 (circle_close)",
+            "像素化 (pixelize)",
+            "径向 (radial)",
+            "对角线 (diag_bl)",
+            "对角线 (diag_br)"
+        ])
+        trans_type_layout.addWidget(self.transition_combo)
+
+        transition_layout.addLayout(trans_type_layout)
+
+        # 转场时长
+        trans_dur_layout = QHBoxLayout()
+        trans_dur_layout.addWidget(QLabel("转场时长:"))
+
+        self.transition_duration_spin = QDoubleSpinBox()
+        self.transition_duration_spin.setRange(0.1, 3.0)
+        self.transition_duration_spin.setValue(0.5)
+        self.transition_duration_spin.setSingleStep(0.1)
+        self.transition_duration_spin.setSuffix(" 秒")
+        trans_dur_layout.addWidget(self.transition_duration_spin)
+
+        trans_dur_layout.addStretch()
+        transition_layout.addLayout(trans_dur_layout)
+
+        # 转场说明
+        transition_info = QLabel("提示：转场效果会让视频过渡更自然，但会增加处理时间")
+        transition_info.setStyleSheet("color: gray; font-size: 11px;")
+        transition_info.setWordWrap(True)
+        transition_layout.addWidget(transition_info)
+
+        right_layout.addWidget(transition_group)
+
         # 操作按钮
         btn_layout = QHBoxLayout()
 
@@ -716,6 +768,16 @@ class MainWindow(QMainWindow):
         hw_accel_map = {0: "auto", 1: "nvenc", 2: "cpu"}
         hw_accel = hw_accel_map.get(self.hw_accel_combo.currentIndex(), "auto")
 
+        # 转场效果
+        transition_map = {
+            0: "none", 1: "fade", 2: "dissolve", 3: "wipe_left", 4: "wipe_right",
+            5: "slide_left", 6: "slide_right", 7: "smooth_left", 8: "smooth_right",
+            9: "circle_open", 10: "circle_close", 11: "pixelize", 12: "radial",
+            13: "diag_bl", 14: "diag_br"
+        }
+        transition = transition_map.get(self.transition_combo.currentIndex(), "none")
+        transition_duration = self.transition_duration_spin.value()
+
         # 创建合并配置
         config = MergeConfig(
             output_dir=output_dir,
@@ -724,8 +786,14 @@ class MainWindow(QMainWindow):
             fps=self.fps_spin.value() if self.enable_fps_cb.isChecked() else None,
             codec="h265" if self.codec_combo.currentIndex() == 1 else "h264",
             quality=["high", "medium", "low"][self.quality_combo.currentIndex()],
-            hardware_accel=hw_accel
+            hardware_accel=hw_accel,
+            transition=transition,
+            transition_duration=transition_duration
         )
+
+        # 显示配置信息
+        if transition != "none":
+            self.log(f"转场效果: {transition}, 时长: {transition_duration}秒")
 
         # 禁用按钮
         self.btn_start.setEnabled(False)

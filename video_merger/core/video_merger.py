@@ -30,6 +30,8 @@ class MergeConfig:
     quality: str = "high"  # 质量: low, medium, high
     crop_black_bars: bool = False  # 裁剪黑边
     hardware_accel: str = "auto"  # 硬件加速: auto, nvenc, qsv, amf, cpu
+    transition: str = "none"  # 转场效果: none, fade, dissolve, wipe_left, wipe_right, slide_left, slide_right
+    transition_duration: float = 0.5  # 转场时长（秒）
 
 
 def _get_encoder_cmd(config: MergeConfig) -> list:
@@ -70,57 +72,89 @@ def _get_encoder_cmd(config: MergeConfig) -> list:
 
 
 
-def _get_encoder_params(config: MergeConfig) -> list:
-    """获取编码器参数"""
-    hw_accel = config.hardware_accel
-    quality_params = get_quality_params(config.quality, config.codec, hw_accel)
+def _get_transition_filter(transition: str, duration: float, idx: int, offset: float) -> str:
+    """
+    生成转场滤镜
 
-    # 检测NVENC是否可用
-    ffmpeg = _find_ffmpeg()
-    nvenc_available = False
+    Args:
+        transition: 转场类型
+        duration: 转场时长（秒）
+        idx: 当前视频索引
+        offset: 转场开始时间（秒）
+
+    Returns:
+        FFmpeg滤镜字符串
+    """
+    if transition == "none":
+        return ""
+
+    # xfade转场效果
+    transitions = {
+        "fade": "fade",
+        "dissolve": "dissolve",
+        "wipe_left": "wipeleft",
+        "wipe_right": "wiperight",
+        "slide_left": "slideleft",
+        "slide_right": "slideright",
+        "smooth_left": "smoothleft",
+        "smooth_right": "smoothright",
+        "circle_open": "circleopen",
+        "circle_close": "circleclose",
+        "pixelize": "pixelize",
+        "radial": "radial",
+        "horzopen": "horzopen",
+        "horzclose": "horzclose",
+        "vertopen": "vertopen",
+        "vertclose": "vertclose",
+        "diag_bl": "diagbl",
+        "diag_br": "diagbr",
+        "hlslice": "hlslice",
+        "hrslice": "hrslice",
+        "vuslice": "vuslice",
+        "vdslice": "vdslice",
+    }
+
+    xfade_type = transitions.get(transition, "fade")
+    return f"xfade=transition={xfade_type}:duration={duration}:offset={offset}"
+
+
+def _get_video_duration(video_path: str) -> float:
+    """获取视频时长（秒）"""
     try:
-        result = subprocess.run([ffmpeg, '-encoders'], capture_output=True, text=True)
-        nvenc_available = 'h264_nvenc' in result.stdout or 'hevc_nvenc' in result.stdout
+        from .ffmpeg_utils import _find_ffprobe
+        ffprobe = _find_ffprobe()
+        cmd = [
+            ffprobe, '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            return float(result.stdout.strip())
     except:
         pass
+    return 0.0
 
-    cmd = []
 
-    # 自动选择硬件加速
-    if hw_accel == "auto" and nvenc_available:
-        hw_accel = "nvenc"
-
-    # 根据硬件加速类型选择编码器
-    if hw_accel == "nvenc" and nvenc_available:
-        # NVIDIA NVENC
-        if config.codec == 'h265':
-            cmd.extend(['-c:v', 'hevc_nvenc'])
-        else:
-            cmd.extend(['-c:v', 'h264_nvenc'])
-        cmd.extend([
-            '-cq', quality_params.get('cq', '25'),
-            '-preset', quality_params.get('preset', 'medium'),
-            '-b:v', '0',  # 使用CQ模式
-        ])
-    else:
-        # CPU编码
-        if config.codec == 'h265':
-            cmd.extend(['-c:v', 'libx265'])
-        else:
-            cmd.extend(['-c:v', 'libx264'])
-        cmd.extend([
-            '-crf', quality_params.get('crf', '23'),
-            '-preset', quality_params.get('preset', 'medium'),
-        ])
-
-    # 音频编码
-    cmd.extend([
-        '-c:a', 'aac',
-        '-b:a', '128k',
-        '-movflags', '+faststart',
-    ])
-
-    return cmd
+def _check_audio_streams(video_paths: List[str]) -> bool:
+    """检查视频文件是否有音频流"""
+    try:
+        from .ffmpeg_utils import _find_ffprobe
+        ffprobe = _find_ffprobe()
+        # 只检查第一个视频
+        cmd = [
+            ffprobe, '-v', 'error',
+            '-select_streams', 'a',
+            '-show_entries', 'stream=codec_type',
+            '-of', 'csv=p=0',
+            video_paths[0]
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        return 'audio' in result.stdout
+    except:
+        pass
+    return False
 
 
 def merge_videos_concat(
@@ -211,7 +245,7 @@ def merge_videos_filter_complex(
     progress_callback: Optional[Callable[[float, str], None]] = None
 ) -> Tuple[bool, str]:
     """
-    使用FFmpeg filter_complex方式合并视频
+    使用FFmpeg filter_complex方式合并视频（支持转场）
 
     Returns:
         (是否成功, 错误信息)
@@ -220,6 +254,8 @@ def merge_videos_filter_complex(
         return False, "没有视频文件"
 
     ffmpeg = _find_ffmpeg()
+    n = len(video_paths)
+    has_transition = config.transition != "none" and n >= 2
 
     try:
         cmd = [ffmpeg, '-y']
@@ -228,7 +264,8 @@ def merge_videos_filter_complex(
         for path in video_paths:
             cmd.extend(['-i', path])
 
-        n = len(video_paths)
+        # 检查是否有音频流
+        has_audio = _check_audio_streams(video_paths)
 
         # 构建filter_complex
         video_filters = []
@@ -241,24 +278,77 @@ def merge_videos_filter_complex(
 
         target_w, target_h = target_res.split('x')
 
+        # 获取每个视频的时长（用于转场计算）
+        durations = []
+        if has_transition:
+            for path in video_paths:
+                dur = _get_video_duration(path)
+                durations.append(dur if dur > 0 else 3.0)  # 默认3秒
+
         for i in range(n):
-            # 视频处理：统一分辨率
+            # 视频处理：统一分辨率和帧率
             video_filters.append(
                 f"[{i}:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
-                f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2[v{i}]"
+                f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,"
+                f"setpts=PTS-STARTPTS,fps=25[v{i}]"
             )
-            # 音频处理
-            audio_filters.append(f"[{i}:a]aresample=44100[a{i}]")
+            # 音频处理（如果有音频流）
+            if has_audio:
+                audio_filters.append(f"[{i}:a]aresample=44100,asetpts=PTS-STARTPTS[a{i}]")
 
-        # 拼接
-        video_inputs = ''.join(f'[v{i}]' for i in range(n))
-        audio_inputs = ''.join(f'[a{i}]' for i in range(n))
-        concat_filter = f"{video_inputs}{audio_inputs}concat=n={n}:v=1:a=1[outv][outa]"
+        if has_transition:
+            # 使用xfade转场
+            transition_duration = config.transition_duration
 
-        filter_complex = ';'.join(video_filters + audio_filters + [concat_filter])
+            # 视频转场链
+            current_offset = durations[0] - transition_duration
+
+            for i in range(1, n):
+                # 视频xfade
+                xfade_filter = _get_transition_filter(
+                    config.transition, transition_duration, i, current_offset
+                )
+                if i == 1:
+                    video_chain = f"[v0][v1]{xfade_filter}[vt{i}]"
+                else:
+                    video_chain = f"[vt{i-1}][v{i}]{xfade_filter}[vt{i}]"
+
+                video_filters.append(video_chain)
+
+                # 更新偏移量
+                if i < n - 1:
+                    current_offset += durations[i] - transition_duration
+
+            # 最终视频输出
+            final_video = f"[vt{n-1}]"
+
+            # 音频处理（使用concat拼接，不做转场）
+            if has_audio:
+                audio_inputs = ''.join(f'[a{i}]' for i in range(n))
+                audio_concat = f"{audio_inputs}concat=n={n}:v=0:a=1[outa]"
+                audio_filters.append(audio_concat)
+                final_audio = "[outa]"
+            else:
+                final_audio = None
+        else:
+            # 无转场，使用concat
+            video_inputs = ''.join(f'[v{i}]' for i in range(n))
+            if has_audio:
+                audio_inputs = ''.join(f'[a{i}]' for i in range(n))
+                concat_filter = f"{video_inputs}{audio_inputs}concat=n={n}:v=1:a=1[outv][outa]"
+            else:
+                concat_filter = f"{video_inputs}concat=n={n}:v=1:a=0[outv]"
+            video_filters.append(concat_filter)
+            final_video = "[outv]"
+            final_audio = "[outa]" if has_audio else None
+
+        # 构建完整filter_complex
+        filter_complex = ';'.join(video_filters + audio_filters)
 
         cmd.extend(['-filter_complex', filter_complex])
-        cmd.extend(['-map', '[outv]', '-map', '[outa]'])
+        cmd.extend(['-map', final_video])
+        if final_audio:
+            cmd.extend(['-map', final_audio])
 
         # 编码参数
         encoder_cmd = _get_encoder_cmd(config)
@@ -266,7 +356,7 @@ def merge_videos_filter_complex(
         cmd.append(output_path)
 
         if progress_callback:
-            progress_callback(0, "filter_complex合并中...")
+            progress_callback(0, f"合并中（转场: {config.transition}）...")
 
         # 执行命令
         process = subprocess.Popen(
@@ -279,14 +369,14 @@ def merge_videos_filter_complex(
         stdout, stderr = process.communicate()
 
         if process.returncode != 0:
-            error_msg = stderr[-300:] if stderr else "未知错误"
+            error_msg = stderr[-500:] if stderr else "未知错误"
             return False, f"FFmpeg错误: {error_msg}"
 
         if not os.path.exists(output_path):
             return False, "输出文件未生成"
 
         if progress_callback:
-            progress_callback(1.0, "filter_complex合并完成")
+            progress_callback(1.0, "合并完成")
 
         return True, "成功"
 
@@ -323,15 +413,21 @@ def merge_videos(
 
     format_consistent = len(formats) <= 1
     need_preprocess = config.resolution is not None or config.fps is not None
+    has_transition = config.transition != "none"
 
     # 选择合并方式
-    if format_consistent and not need_preprocess:
+    if has_transition:
+        # 有转场必须使用filter_complex
+        if progress_callback:
+            progress_callback(0, f"使用转场效果: {config.transition}")
+        success, msg = merge_videos_filter_complex(video_paths, output_path, config, progress_callback)
+    elif format_consistent and not need_preprocess:
         if progress_callback:
             progress_callback(0, "格式一致，使用concat方式")
         success, msg = merge_videos_concat(video_paths, output_path, config, progress_callback)
     else:
         if progress_callback:
-            progress_callback(0, f"格式不一致，使用filter_complex方式")
+            progress_callback(0, "格式不一致，使用filter_complex方式")
         success, msg = merge_videos_filter_complex(video_paths, output_path, config, progress_callback)
 
     # 如果第一种方式失败，尝试另一种
