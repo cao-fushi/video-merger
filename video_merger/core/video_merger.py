@@ -377,7 +377,19 @@ def merge_videos(
     Returns:
         是否成功
     """
+    if not videos or len(videos) < 2:
+        if progress_callback:
+            progress_callback(0, "视频数量不足")
+        return False
+
     video_paths = [v.视频路径 for v in videos]
+
+    # 检查文件是否存在
+    for path in video_paths:
+        if not os.path.exists(path):
+            if progress_callback:
+                progress_callback(0, f"文件不存在: {path}")
+            return False
 
     # 检查是否需要预处理
     need_preprocess = (
@@ -394,12 +406,21 @@ def merge_videos(
 
     format_consistent = len(formats) <= 2  # 允许分辨率和帧率各一种
 
-    if need_preprocess or not format_consistent:
-        # 需要预处理或格式不一致，使用filter_complex
-        return merge_videos_filter_complex(video_paths, output_path, config, progress_callback)
-    else:
-        # 格式一致，使用concat（更快）
-        return merge_videos_concat(video_paths, output_path, config, progress_callback)
+    try:
+        if need_preprocess or not format_consistent:
+            # 需要预处理或格式不一致，使用filter_complex
+            if progress_callback:
+                progress_callback(0, f"使用filter_complex合并（格式不一致或需要预处理）")
+            return merge_videos_filter_complex(video_paths, output_path, config, progress_callback)
+        else:
+            # 格式一致，使用concat（更快）
+            if progress_callback:
+                progress_callback(0, f"使用concat合并（格式一致）")
+            return merge_videos_concat(video_paths, output_path, config, progress_callback)
+    except Exception as e:
+        if progress_callback:
+            progress_callback(0, f"合并失败: {str(e)}")
+        return False
 
 
 def batch_merge_videos(
@@ -424,31 +445,46 @@ def batch_merge_videos(
 
     total = len(combinations)
 
+    # 确保输出目录存在
+    if config.output_dir:
+        os.makedirs(config.output_dir, exist_ok=True)
+
     for idx, combo in enumerate(combinations):
-        # 生成输出文件名
+        # 生成输出文件名 - 所有视频放在同一个文件夹
         file_name = f"{config.file_prefix}_{idx + 1:03d}.mp4"
 
-        # 确定输出目录（按开头视频分组）
-        if combo and config.output_dir:
-            first_video_name = combo[0].视频文件名称
-            # 清理文件名中的非法字符
-            first_video_name = "".join(c for c in first_video_name if c.isalnum() or c in "._- ")
-            first_video_name = first_video_name[:50]  # 限制长度
-
-            output_dir = os.path.join(config.output_dir, first_video_name)
-            os.makedirs(output_dir, exist_ok=True)
-            output_path = os.path.join(output_dir, file_name)
+        # 直接使用配置的输出目录，不再按开头视频分组
+        if config.output_dir:
+            output_path = os.path.join(config.output_dir, file_name)
         else:
-            output_path = os.path.join(config.output_dir or ".", file_name)
+            output_path = file_name
 
         def local_progress(progress, status):
             if progress_callback:
                 progress_callback(idx + 1, total, progress, status)
 
-        # 合并视频
-        success = merge_videos(combo, output_path, config, local_progress)
+        # 检查视频文件是否存在
+        all_exist = True
+        for v in combo:
+            if not os.path.exists(v.视频路径):
+                if progress_callback:
+                    progress_callback(idx + 1, total, 0, f"文件不存在: {v.视频文件名称}")
+                all_exist = False
+                break
 
-        if success:
+        if not all_exist:
+            fail_count += 1
+            continue
+
+        # 合并视频
+        try:
+            success = merge_videos(combo, output_path, config, local_progress)
+        except Exception as e:
+            if progress_callback:
+                progress_callback(idx + 1, total, 0, f"合成异常: {str(e)}")
+            success = False
+
+        if success and os.path.exists(output_path):
             success_count += 1
             output_files.append(output_path)
         else:
