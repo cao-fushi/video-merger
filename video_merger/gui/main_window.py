@@ -24,7 +24,7 @@ from ..core.ffmpeg_utils import check_ffmpeg_installed
 class MergeThread(QThread):
     """合并线程"""
     progress_updated = pyqtSignal(int, int, float, str)  # 当前索引, 总数, 进度, 状态
-    finished_signal = pyqtSignal(int, int, list)  # 成功数, 失败数, 输出文件列表
+    finished_signal = pyqtSignal(int, int, list, list)  # 成功数, 失败数, 输出文件列表, 失败原因列表
 
     def __init__(self, combinations, config):
         super().__init__()
@@ -37,14 +37,14 @@ class MergeThread(QThread):
             if not self._is_cancelled:
                 self.progress_updated.emit(current, total, progress, status)
 
-        success, fail, files = batch_merge_videos(
+        success, fail, files, reasons = batch_merge_videos(
             self.combinations,
             self.config,
             progress_callback
         )
 
         if not self._is_cancelled:
-            self.finished_signal.emit(success, fail, files)
+            self.finished_signal.emit(success, fail, files, reasons)
 
     def cancel(self):
         self._is_cancelled = True
@@ -750,19 +750,32 @@ class MainWindow(QMainWindow):
         """合成进度更新"""
         overall_progress = int(((current - 1) / total + progress / total) * 100)
         self.progress_bar.setValue(overall_progress)
-        self.progress_label.setText(f"正在处理第 {current}/{total} 个: {status}")
+        self.progress_label.setText(f"[{current}/{total}] {status}")
+        # 同时输出到日志
+        self.log(f"[{current}/{total}] {status}")
 
-    def on_merge_finished(self, success, fail, files):
+    def on_merge_finished(self, success, fail, files, reasons):
         """合成完成"""
         self.btn_start.setEnabled(True)
         self.btn_cancel.setEnabled(False)
         self.btn_preview.setEnabled(True)
         self.progress_bar.setValue(100)
 
+        self.log("")
+        self.log("=" * 50)
         self.log(f"合成完成！成功: {success}, 失败: {fail}")
+        self.log("=" * 50)
 
         if files:
             self.log(f"输出目录: {os.path.dirname(files[0])}")
+            self.log(f"成功文件:")
+            for f in files:
+                self.log(f"  ✓ {os.path.basename(f)}")
+
+        if reasons:
+            self.log(f"失败原因:")
+            for r in reasons:
+                self.log(f"  ✗ {r}")
 
         QMessageBox.information(
             self, "完成",

@@ -4,9 +4,19 @@ import os
 import tempfile
 from typing import List, Optional, Callable, Tuple
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from .video_info import VideoInfo
 from .ffmpeg_utils import _find_ffmpeg
+
+
+def _check_nvenc_available() -> bool:
+    """检查NVENC是否可用"""
+    ffmpeg = _find_ffmpeg()
+    try:
+        result = subprocess.run([ffmpeg, '-encoders'], capture_output=True, text=True, timeout=5)
+        return 'h264_nvenc' in result.stdout
+    except:
+        return False
 
 
 @dataclass
@@ -22,104 +32,42 @@ class MergeConfig:
     hardware_accel: str = "auto"  # 硬件加速: auto, nvenc, qsv, amf, cpu
 
 
-def get_quality_params(quality: str, codec: str, hw_accel: str = "cpu") -> dict:
-    """获取质量参数"""
-    # 硬件编码器使用不同的参数
-    if hw_accel in ["nvenc", "auto"]:
-        # NVENC参数
-        nvenc_params = {
-            "low": {"cq": "30", "preset": "fast"},
-            "medium": {"cq": "25", "preset": "medium"},
-            "high": {"cq": "20", "preset": "slow"},
-        }
-        if hw_accel == "nvenc":
-            return nvenc_params.get(quality, nvenc_params["high"])
+def _get_encoder_cmd(config: MergeConfig) -> list:
+    """获取编码器命令参数"""
+    hw_accel = config.hardware_accel
+    nvenc_available = _check_nvenc_available()
 
-    # CPU编码器参数
-    params = {
-        "low": {"crf": "28", "preset": "ultrafast"},
-        "medium": {"crf": "23", "preset": "medium"},
-        "high": {"crf": "18", "preset": "slow"},
-    }
-    return params.get(quality, params["high"])
+    # 自动选择
+    if hw_accel == "auto" and nvenc_available:
+        hw_accel = "nvenc"
+
+    cmd = []
+
+    if hw_accel == "nvenc" and nvenc_available:
+        # NVIDIA NVENC
+        if config.codec == 'h265':
+            cmd.extend(['-c:v', 'hevc_nvenc'])
+        else:
+            cmd.extend(['-c:v', 'h264_nvenc'])
+
+        quality_map = {"low": "30", "medium": "25", "high": "20"}
+        cq = quality_map.get(config.quality, "25")
+        cmd.extend(['-cq', cq, '-preset', 'medium'])
+    else:
+        # CPU编码
+        if config.codec == 'h265':
+            cmd.extend(['-c:v', 'libx265'])
+        else:
+            cmd.extend(['-c:v', 'libx264'])
+
+        quality_map = {"low": "28", "medium": "23", "high": "18"}
+        crf = quality_map.get(config.quality, "23")
+        cmd.extend(['-crf', crf, '-preset', 'medium'])
+
+    cmd.extend(['-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart'])
+    return cmd
 
 
-def normalize_video(
-    input_path: str,
-    output_path: str,
-    target_resolution: Optional[str] = None,
-    target_fps: Optional[int] = None,
-    crop_black_bars: bool = False,
-    progress_callback: Optional[Callable[[float], None]] = None
-) -> bool:
-    """
-    标准化视频格式（统一分辨率、帧率等）
-
-    Args:
-        input_path: 输入视频路径
-        output_path: 输出视频路径
-        target_resolution: 目标分辨率，如 "1080x1920"
-        target_fps: 目标帧率
-        crop_black_bars: 是否裁剪黑边
-        progress_callback: 进度回调函数
-
-    Returns:
-        是否成功
-    """
-    try:
-        ffmpeg = _find_ffmpeg()
-        cmd = [ffmpeg, '-y', '-i', input_path]
-
-        # 构建视频滤镜
-        filters = []
-
-        # 裁剪黑边
-        if crop_black_bars:
-            filters.append("cropdetect=24:16:0")
-
-        # 调整分辨率
-        if target_resolution:
-            width, height = target_resolution.split('x')
-            filters.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease")
-            filters.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2")
-
-        # 调整帧率
-        if target_fps:
-            filters.append(f"fps={target_fps}")
-
-        if filters:
-            cmd.extend(['-vf', ','.join(filters)])
-
-        # 编码参数
-        cmd.extend([
-            '-c:v', 'libx264',
-            '-crf', '23',
-            '-preset', 'medium',
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-movflags', '+faststart',
-            output_path
-        ])
-
-        # 执行命令
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True
-        )
-
-        _, stderr = process.communicate()
-
-        if process.returncode != 0:
-            print(f"视频标准化失败: {stderr}")
-            return False
-
-        return True
-
-    except Exception as e:
-        print(f"视频标准化异常: {e}")
-        return False
 
 
 def _get_encoder_params(config: MergeConfig) -> list:
@@ -180,55 +128,49 @@ def merge_videos_concat(
     output_path: str,
     config: MergeConfig,
     progress_callback: Optional[Callable[[float, str], None]] = None
-) -> bool:
+) -> Tuple[bool, str]:
     """
     使用FFmpeg concat方式合并视频
 
-    Args:
-        video_paths: 视频文件路径列表
-        output_path: 输出文件路径
-        config: 合并配置
-        progress_callback: 进度回调函数 (进度0-1, 状态信息)
-
     Returns:
-        是否成功
+        (是否成功, 错误信息)
     """
     if not video_paths:
-        return False
+        return False, "没有视频文件"
+
+    ffmpeg = _find_ffmpeg()
+    filelist_path = None
 
     try:
         # 创建临时文件列表
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
             filelist_path = f.name
             for path in video_paths:
-                # 转义路径中的特殊字符
                 escaped_path = path.replace("'", "'\\''").replace("\\", "/")
                 f.write(f"file '{escaped_path}'\n")
 
         # 构建FFmpeg命令
-        ffmpeg = _find_ffmpeg()
         cmd = [ffmpeg, '-y', '-f', 'concat', '-safe', '0', '-i', filelist_path]
 
-        # 添加视频滤镜（如果需要）
+        # 添加视频滤镜
         filters = []
         if config.resolution:
             width, height = config.resolution.split('x')
             filters.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease")
             filters.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2")
-
         if config.fps:
             filters.append(f"fps={config.fps}")
 
         if filters:
             cmd.extend(['-vf', ','.join(filters)])
 
-        # 获取编码器参数（支持硬件加速）
-        encoder_params = _get_encoder_params(config)
-        cmd.extend(encoder_params)
+        # 编码参数
+        encoder_cmd = _get_encoder_cmd(config)
+        cmd.extend(encoder_cmd)
         cmd.append(output_path)
 
         if progress_callback:
-            progress_callback(0, "开始合并...")
+            progress_callback(0, "concat合并中...")
 
         # 执行命令
         process = subprocess.Popen(
@@ -238,28 +180,28 @@ def merge_videos_concat(
             universal_newlines=True
         )
 
-        _, stderr = process.communicate()
-
-        # 清理临时文件
-        try:
-            os.unlink(filelist_path)
-        except:
-            pass
+        stdout, stderr = process.communicate()
 
         if process.returncode != 0:
-            if progress_callback:
-                progress_callback(0, f"合并失败: {stderr[:200]}")
-            return False
+            error_msg = stderr[-300:] if stderr else "未知错误"
+            return False, f"FFmpeg错误: {error_msg}"
+
+        if not os.path.exists(output_path):
+            return False, "输出文件未生成"
 
         if progress_callback:
-            progress_callback(1.0, "合并完成")
+            progress_callback(1.0, "concat合并完成")
 
-        return True
+        return True, "成功"
 
     except Exception as e:
-        if progress_callback:
-            progress_callback(0, f"合并异常: {str(e)}")
-        return False
+        return False, f"异常: {str(e)}"
+    finally:
+        if filelist_path and os.path.exists(filelist_path):
+            try:
+                os.unlink(filelist_path)
+            except:
+                pass
 
 
 def merge_videos_filter_complex(
@@ -267,24 +209,19 @@ def merge_videos_filter_complex(
     output_path: str,
     config: MergeConfig,
     progress_callback: Optional[Callable[[float, str], None]] = None
-) -> bool:
+) -> Tuple[bool, str]:
     """
-    使用FFmpeg filter_complex方式合并视频（更灵活，可处理不同格式）
-
-    Args:
-        video_paths: 视频文件路径列表
-        output_path: 输出文件路径
-        config: 合并配置
-        progress_callback: 进度回调函数
+    使用FFmpeg filter_complex方式合并视频
 
     Returns:
-        是否成功
+        (是否成功, 错误信息)
     """
     if not video_paths:
-        return False
+        return False, "没有视频文件"
+
+    ffmpeg = _find_ffmpeg()
 
     try:
-        ffmpeg = _find_ffmpeg()
         cmd = [ffmpeg, '-y']
 
         # 添加所有输入文件
@@ -297,21 +234,19 @@ def merge_videos_filter_complex(
         video_filters = []
         audio_filters = []
 
+        # 确定目标分辨率
+        target_res = config.resolution
+        if not target_res:
+            target_res = "720x1280"
+
+        target_w, target_h = target_res.split('x')
+
         for i in range(n):
-            # 视频处理
-            vf_parts = []
-            if config.resolution:
-                width, height = config.resolution.split('x')
-                vf_parts.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease")
-                vf_parts.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2")
-            if config.fps:
-                vf_parts.append(f"fps={config.fps}")
-
-            if vf_parts:
-                video_filters.append(f"[{i}:v]{','.join(vf_parts)}[v{i}]")
-            else:
-                video_filters.append(f"[{i}:v]copy[v{i}]")
-
+            # 视频处理：统一分辨率
+            video_filters.append(
+                f"[{i}:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
+                f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2[v{i}]"
+            )
             # 音频处理
             audio_filters.append(f"[{i}:a]aresample=44100[a{i}]")
 
@@ -325,13 +260,13 @@ def merge_videos_filter_complex(
         cmd.extend(['-filter_complex', filter_complex])
         cmd.extend(['-map', '[outv]', '-map', '[outa]'])
 
-        # 获取编码器参数（支持硬件加速）
-        encoder_params = _get_encoder_params(config)
-        cmd.extend(encoder_params)
+        # 编码参数
+        encoder_cmd = _get_encoder_cmd(config)
+        cmd.extend(encoder_cmd)
         cmd.append(output_path)
 
         if progress_callback:
-            progress_callback(0, "开始合并...")
+            progress_callback(0, "filter_complex合并中...")
 
         # 执行命令
         process = subprocess.Popen(
@@ -341,22 +276,22 @@ def merge_videos_filter_complex(
             universal_newlines=True
         )
 
-        _, stderr = process.communicate()
+        stdout, stderr = process.communicate()
 
         if process.returncode != 0:
-            if progress_callback:
-                progress_callback(0, f"合并失败: {stderr[:200]}")
-            return False
+            error_msg = stderr[-300:] if stderr else "未知错误"
+            return False, f"FFmpeg错误: {error_msg}"
+
+        if not os.path.exists(output_path):
+            return False, "输出文件未生成"
 
         if progress_callback:
-            progress_callback(1.0, "合并完成")
+            progress_callback(1.0, "filter_complex合并完成")
 
-        return True
+        return True, "成功"
 
     except Exception as e:
-        if progress_callback:
-            progress_callback(0, f"合并异常: {str(e)}")
-        return False
+        return False, f"异常: {str(e)}"
 
 
 def merge_videos(
@@ -364,84 +299,69 @@ def merge_videos(
     output_path: str,
     config: MergeConfig,
     progress_callback: Optional[Callable[[float, str], None]] = None
-) -> bool:
+) -> Tuple[bool, str]:
     """
     合并视频（自动选择最佳方式）
 
-    Args:
-        videos: 视频信息列表
-        output_path: 输出文件路径
-        config: 合并配置
-        progress_callback: 进度回调函数
-
     Returns:
-        是否成功
+        (是否成功, 错误信息)
     """
     if not videos or len(videos) < 2:
-        if progress_callback:
-            progress_callback(0, "视频数量不足")
-        return False
+        return False, "视频数量不足"
 
     video_paths = [v.视频路径 for v in videos]
 
     # 检查文件是否存在
     for path in video_paths:
         if not os.path.exists(path):
-            if progress_callback:
-                progress_callback(0, f"文件不存在: {path}")
-            return False
-
-    # 检查是否需要预处理
-    need_preprocess = (
-        config.resolution is not None or
-        config.fps is not None or
-        config.crop_black_bars
-    )
+            return False, f"文件不存在: {os.path.basename(path)}"
 
     # 检查视频格式是否一致
     formats = set()
     for v in videos:
         formats.add(v.视频分辨率)
-        formats.add(v.帧率信息)
 
-    format_consistent = len(formats) <= 2  # 允许分辨率和帧率各一种
+    format_consistent = len(formats) <= 1
+    need_preprocess = config.resolution is not None or config.fps is not None
 
-    try:
-        if need_preprocess or not format_consistent:
-            # 需要预处理或格式不一致，使用filter_complex
-            if progress_callback:
-                progress_callback(0, f"使用filter_complex合并（格式不一致或需要预处理）")
-            return merge_videos_filter_complex(video_paths, output_path, config, progress_callback)
-        else:
-            # 格式一致，使用concat（更快）
-            if progress_callback:
-                progress_callback(0, f"使用concat合并（格式一致）")
-            return merge_videos_concat(video_paths, output_path, config, progress_callback)
-    except Exception as e:
+    # 选择合并方式
+    if format_consistent and not need_preprocess:
         if progress_callback:
-            progress_callback(0, f"合并失败: {str(e)}")
-        return False
+            progress_callback(0, "格式一致，使用concat方式")
+        success, msg = merge_videos_concat(video_paths, output_path, config, progress_callback)
+    else:
+        if progress_callback:
+            progress_callback(0, f"格式不一致，使用filter_complex方式")
+        success, msg = merge_videos_filter_complex(video_paths, output_path, config, progress_callback)
+
+    # 如果第一种方式失败，尝试另一种
+    if not success:
+        if progress_callback:
+            progress_callback(0, f"第一种方式失败，尝试另一种...")
+
+        if format_consistent and not need_preprocess:
+            success, msg = merge_videos_filter_complex(video_paths, output_path, config, progress_callback)
+        else:
+            success, msg = merge_videos_concat(video_paths, output_path, config, progress_callback)
+
+    return success, msg
 
 
 def batch_merge_videos(
     combinations: List[List[VideoInfo]],
     config: MergeConfig,
     progress_callback: Optional[Callable[[int, int, float, str], None]] = None
-) -> Tuple[int, int, List[str]]:
+) -> Tuple[int, int, List[str], List[str]]:
     """
     批量合并视频
 
-    Args:
-        combinations: 合成方案列表
-        config: 合并配置
-        progress_callback: 进度回调函数 (当前索引, 总数, 当前进度, 状态信息)
-
     Returns:
-        (成功数, 失败数, 输出文件路径列表)
+        (成功数, 失败数, 成功文件列表, 失败原因列表)
     """
     success_count = 0
     fail_count = 0
     output_files = []
+    fail_reasons = []
 
     total = len(combinations)
 
@@ -450,10 +370,8 @@ def batch_merge_videos(
         os.makedirs(config.output_dir, exist_ok=True)
 
     for idx, combo in enumerate(combinations):
-        # 生成输出文件名 - 所有视频放在同一个文件夹
         file_name = f"{config.file_prefix}_{idx + 1:03d}.mp4"
 
-        # 直接使用配置的输出目录，不再按开头视频分组
         if config.output_dir:
             output_path = os.path.join(config.output_dir, file_name)
         else:
@@ -463,12 +381,19 @@ def batch_merge_videos(
             if progress_callback:
                 progress_callback(idx + 1, total, progress, status)
 
-        # 检查视频文件是否存在
+        # 显示当前合成信息
+        video_names = [v.视频文件名称[:20] for v in combo]
+        if progress_callback:
+            progress_callback(idx + 1, total, 0, f"准备: {' + '.join(video_names)}")
+
+        # 检查视频文件
         all_exist = True
         for v in combo:
             if not os.path.exists(v.视频路径):
+                error_msg = f"文件不存在: {v.视频文件名称}"
+                fail_reasons.append(error_msg)
                 if progress_callback:
-                    progress_callback(idx + 1, total, 0, f"文件不存在: {v.视频文件名称}")
+                    progress_callback(idx + 1, total, 0, error_msg)
                 all_exist = False
                 break
 
@@ -477,17 +402,17 @@ def batch_merge_videos(
             continue
 
         # 合并视频
-        try:
-            success = merge_videos(combo, output_path, config, local_progress)
-        except Exception as e:
-            if progress_callback:
-                progress_callback(idx + 1, total, 0, f"合成异常: {str(e)}")
-            success = False
+        success, error_msg = merge_videos(combo, output_path, config, local_progress)
 
         if success and os.path.exists(output_path):
             success_count += 1
             output_files.append(output_path)
+            if progress_callback:
+                progress_callback(idx + 1, total, 1.0, f"成功: {file_name}")
         else:
             fail_count += 1
+            fail_reasons.append(f"{file_name}: {error_msg}")
+            if progress_callback:
+                progress_callback(idx + 1, total, 0, f"失败: {error_msg}")
 
-    return success_count, fail_count, output_files
+    return success_count, fail_count, output_files, fail_reasons
