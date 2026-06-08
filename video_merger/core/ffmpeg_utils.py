@@ -50,6 +50,24 @@ def _find_ffmpeg() -> str:
     if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
         return FFMPEG_PATH
 
+    # 尝试从exe所在目录查找（打包后的环境）
+    if getattr(sys, 'frozen', False):
+        # PyInstaller打包后的环境
+        exe_dir = os.path.dirname(sys.executable)
+        internal_dir = os.path.join(exe_dir, '_internal')
+
+        # 检查_internal/imageio_ffmpeg/binaries目录
+        ffmpeg_in_binaries = os.path.join(internal_dir, 'imageio_ffmpeg', 'binaries', 'ffmpeg-win-x86_64-v7.1.exe')
+        if os.path.exists(ffmpeg_in_binaries):
+            FFMPEG_PATH = ffmpeg_in_binaries
+            return ffmpeg_in_binaries
+
+        # 检查_internal目录
+        ffmpeg_in_internal = os.path.join(internal_dir, 'ffmpeg.exe')
+        if os.path.exists(ffmpeg_in_internal):
+            FFMPEG_PATH = ffmpeg_in_internal
+            return ffmpeg_in_internal
+
     # 尝试从PATH中查找
     path = shutil.which('ffmpeg')
     if path:
@@ -57,7 +75,7 @@ def _find_ffmpeg() -> str:
 
     # 尝试常见路径
     for common_path in COMMON_FFMPEG_PATHS:
-        if os.path.exists(common_path):
+        if common_path and os.path.exists(common_path):
             FFMPEG_PATH = common_path
             return common_path
 
