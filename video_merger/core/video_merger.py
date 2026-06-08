@@ -19,11 +19,23 @@ class MergeConfig:
     codec: str = "h264"  # 编码器: h264, h265
     quality: str = "high"  # 质量: low, medium, high
     crop_black_bars: bool = False  # 裁剪黑边
-    hardware_accel: Optional[str] = None  # 硬件加速: cuda, qsv, etc.
+    hardware_accel: str = "auto"  # 硬件加速: auto, nvenc, qsv, amf, cpu
 
 
-def get_quality_params(quality: str, codec: str) -> dict:
+def get_quality_params(quality: str, codec: str, hw_accel: str = "cpu") -> dict:
     """获取质量参数"""
+    # 硬件编码器使用不同的参数
+    if hw_accel in ["nvenc", "auto"]:
+        # NVENC参数
+        nvenc_params = {
+            "low": {"cq": "30", "preset": "fast"},
+            "medium": {"cq": "25", "preset": "medium"},
+            "high": {"cq": "20", "preset": "slow"},
+        }
+        if hw_accel == "nvenc":
+            return nvenc_params.get(quality, nvenc_params["high"])
+
+    # CPU编码器参数
     params = {
         "low": {"crf": "28", "preset": "ultrafast"},
         "medium": {"crf": "23", "preset": "medium"},
@@ -110,6 +122,59 @@ def normalize_video(
         return False
 
 
+def _get_encoder_params(config: MergeConfig) -> list:
+    """获取编码器参数"""
+    hw_accel = config.hardware_accel
+    quality_params = get_quality_params(config.quality, config.codec, hw_accel)
+
+    # 检测NVENC是否可用
+    ffmpeg = _find_ffmpeg()
+    nvenc_available = False
+    try:
+        result = subprocess.run([ffmpeg, '-encoders'], capture_output=True, text=True)
+        nvenc_available = 'h264_nvenc' in result.stdout or 'hevc_nvenc' in result.stdout
+    except:
+        pass
+
+    cmd = []
+
+    # 自动选择硬件加速
+    if hw_accel == "auto" and nvenc_available:
+        hw_accel = "nvenc"
+
+    # 根据硬件加速类型选择编码器
+    if hw_accel == "nvenc" and nvenc_available:
+        # NVIDIA NVENC
+        if config.codec == 'h265':
+            cmd.extend(['-c:v', 'hevc_nvenc'])
+        else:
+            cmd.extend(['-c:v', 'h264_nvenc'])
+        cmd.extend([
+            '-cq', quality_params.get('cq', '25'),
+            '-preset', quality_params.get('preset', 'medium'),
+            '-b:v', '0',  # 使用CQ模式
+        ])
+    else:
+        # CPU编码
+        if config.codec == 'h265':
+            cmd.extend(['-c:v', 'libx265'])
+        else:
+            cmd.extend(['-c:v', 'libx264'])
+        cmd.extend([
+            '-crf', quality_params.get('crf', '23'),
+            '-preset', quality_params.get('preset', 'medium'),
+        ])
+
+    # 音频编码
+    cmd.extend([
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-movflags', '+faststart',
+    ])
+
+    return cmd
+
+
 def merge_videos_concat(
     video_paths: List[str],
     output_path: str,
@@ -157,22 +222,10 @@ def merge_videos_concat(
         if filters:
             cmd.extend(['-vf', ','.join(filters)])
 
-        # 编码参数
-        quality_params = get_quality_params(config.quality, config.codec)
-
-        if config.codec == 'h265':
-            cmd.extend(['-c:v', 'libx265'])
-        else:
-            cmd.extend(['-c:v', 'libx264'])
-
-        cmd.extend([
-            '-crf', quality_params['crf'],
-            '-preset', quality_params['preset'],
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-movflags', '+faststart',
-            output_path
-        ])
+        # 获取编码器参数（支持硬件加速）
+        encoder_params = _get_encoder_params(config)
+        cmd.extend(encoder_params)
+        cmd.append(output_path)
 
         if progress_callback:
             progress_callback(0, "开始合并...")
@@ -272,22 +325,10 @@ def merge_videos_filter_complex(
         cmd.extend(['-filter_complex', filter_complex])
         cmd.extend(['-map', '[outv]', '-map', '[outa]'])
 
-        # 编码参数
-        quality_params = get_quality_params(config.quality, config.codec)
-
-        if config.codec == 'h265':
-            cmd.extend(['-c:v', 'libx265'])
-        else:
-            cmd.extend(['-c:v', 'libx264'])
-
-        cmd.extend([
-            '-crf', quality_params['crf'],
-            '-preset', quality_params['preset'],
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-movflags', '+faststart',
-            output_path
-        ])
+        # 获取编码器参数（支持硬件加速）
+        encoder_params = _get_encoder_params(config)
+        cmd.extend(encoder_params)
+        cmd.append(output_path)
 
         if progress_callback:
             progress_callback(0, "开始合并...")

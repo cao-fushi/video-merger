@@ -296,6 +296,18 @@ class MainWindow(QMainWindow):
         codec_layout.addStretch()
         preprocess_layout.addLayout(codec_layout)
 
+        # 硬件加速设置
+        hw_layout = QHBoxLayout()
+        hw_layout.addWidget(QLabel("硬件加速:"))
+
+        self.hw_accel_combo = QComboBox()
+        self.hw_accel_combo.addItems(["自动检测", "NVIDIA显卡(NVENC)", "CPU软编码"])
+        self.hw_accel_combo.setToolTip("自动检测会优先使用NVIDIA显卡加速")
+        hw_layout.addWidget(self.hw_accel_combo)
+
+        hw_layout.addStretch()
+        preprocess_layout.addLayout(hw_layout)
+
         right_layout.addWidget(preprocess_group)
 
         # 操作按钮
@@ -671,6 +683,21 @@ class MainWindow(QMainWindow):
             count = self.count_spin.value() if self.count_mode_combo.currentIndex() == 1 else None
             combos = generate_combinations(selected_videos, group_size, start_video, count)
 
+        # 调试日志
+        self.log(f"合成模式: {['轮流开头', '指定开头', '随机开头'][start_mode]}")
+        if start_video:
+            self.log(f"指定开头视频: {start_video.视频文件名称带扩展}")
+        self.log(f"每组片段数: {group_size}")
+        self.log(f"生成组合数: {len(combos)}")
+
+        # 验证组合是否正确
+        if start_video and combos:
+            for i, combo in enumerate(combos[:3]):
+                if combo[0].视频路径 == start_video.视频路径:
+                    self.log(f"  组合{i+1}: ✓ 开头正确 - {combo[0].视频文件名称}")
+                else:
+                    self.log(f"  组合{i+1}: ✗ 开头错误 - {combo[0].视频文件名称}")
+
         if not combos:
             QMessageBox.warning(self, "警告", "无法生成合成方案")
             return
@@ -685,6 +712,10 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
+        # 硬件加速模式
+        hw_accel_map = {0: "auto", 1: "nvenc", 2: "cpu"}
+        hw_accel = hw_accel_map.get(self.hw_accel_combo.currentIndex(), "auto")
+
         # 创建合并配置
         config = MergeConfig(
             output_dir=output_dir,
@@ -692,7 +723,8 @@ class MainWindow(QMainWindow):
             resolution=self.resolution_combo.currentText() if self.enable_resolution_cb.isChecked() else None,
             fps=self.fps_spin.value() if self.enable_fps_cb.isChecked() else None,
             codec="h265" if self.codec_combo.currentIndex() == 1 else "h264",
-            quality=["high", "medium", "low"][self.quality_combo.currentIndex()]
+            quality=["high", "medium", "low"][self.quality_combo.currentIndex()],
+            hardware_accel=hw_accel
         )
 
         # 禁用按钮
