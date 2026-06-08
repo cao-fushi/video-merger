@@ -42,6 +42,15 @@ COMMON_FFMPEG_PATHS = [
 ]
 
 
+def _get_base_dir() -> str:
+    """获取程序基础目录（兼容打包和非打包环境）"""
+    # 优先使用sys.executable（打包后的exe路径）
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    # 开发环境：使用项目的根目录（video_merger/core/的上两级）
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
 def _find_ffmpeg() -> str:
     """查找FFmpeg可执行文件路径"""
     global FFMPEG_PATH
@@ -50,34 +59,32 @@ def _find_ffmpeg() -> str:
     if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
         return FFMPEG_PATH
 
-    # 尝试从exe所在目录查找（打包后的环境）
-    if getattr(sys, 'frozen', False):
-        # PyInstaller打包后的环境
-        exe_dir = os.path.dirname(sys.executable)
-        internal_dir = os.path.join(exe_dir, '_internal')
+    base_dir = _get_base_dir()
 
-        # 检查_internal/imageio_ffmpeg/binaries目录
-        ffmpeg_in_binaries = os.path.join(internal_dir, 'imageio_ffmpeg', 'binaries', 'ffmpeg-win-x86_64-v7.1.exe')
-        if os.path.exists(ffmpeg_in_binaries):
-            FFMPEG_PATH = ffmpeg_in_binaries
-            return ffmpeg_in_binaries
+    # 搜索路径列表（按优先级排序）
+    search_paths = [
+        # 打包后的_internal目录
+        os.path.join(base_dir, '_internal', 'imageio_ffmpeg', 'binaries', 'ffmpeg-win-x86_64-v7.1.exe'),
+        os.path.join(base_dir, '_internal', 'ffmpeg.exe'),
+        # 当前目录
+        os.path.join(base_dir, 'ffmpeg.exe'),
+        # imageio_ffmpeg包中的ffmpeg
+        _get_imageio_ffmpeg_path(),
+        # 系统常见路径
+        "C:/ffmpeg/bin/ffmpeg.exe",
+        "C:/Program Files/ffmpeg/bin/ffmpeg.exe",
+    ]
 
-        # 检查_internal目录
-        ffmpeg_in_internal = os.path.join(internal_dir, 'ffmpeg.exe')
-        if os.path.exists(ffmpeg_in_internal):
-            FFMPEG_PATH = ffmpeg_in_internal
-            return ffmpeg_in_internal
+    # 遍历搜索路径
+    for path in search_paths:
+        if path and os.path.exists(path):
+            FFMPEG_PATH = path
+            return path
 
-    # 尝试从PATH中查找
+    # 最后尝试从PATH中查找
     path = shutil.which('ffmpeg')
     if path:
         return path
-
-    # 尝试常见路径
-    for common_path in COMMON_FFMPEG_PATHS:
-        if common_path and os.path.exists(common_path):
-            FFMPEG_PATH = common_path
-            return common_path
 
     return 'ffmpeg'  # 返回默认名称，让系统尝试
 
@@ -90,35 +97,28 @@ def _find_ffprobe() -> str:
     if FFPROBE_PATH and os.path.exists(FFPROBE_PATH):
         return FFPROBE_PATH
 
-    # 尝试从PATH中查找
+    base_dir = _get_base_dir()
+
+    # 搜索路径列表（按优先级排序）
+    search_paths = [
+        # 打包后的_internal目录
+        os.path.join(base_dir, '_internal', 'ffprobe.exe'),
+        # 当前目录
+        os.path.join(base_dir, 'ffprobe.exe'),
+        # 与ffmpeg同目录
+        os.path.join(os.path.dirname(_find_ffmpeg()), 'ffprobe.exe'),
+    ]
+
+    # 遍历搜索路径
+    for path in search_paths:
+        if path and os.path.exists(path):
+            FFPROBE_PATH = path
+            return path
+
+    # 最后尝试从PATH中查找
     path = shutil.which('ffprobe')
     if path:
         return path
-
-    # 尝试从exe所在目录查找（打包后的环境）
-    if getattr(sys, 'frozen', False):
-        # PyInstaller打包后的环境
-        exe_dir = os.path.dirname(sys.executable)
-        ffprobe_in_exe_dir = os.path.join(exe_dir, 'ffprobe.exe')
-        if os.path.exists(ffprobe_in_exe_dir):
-            FFPROBE_PATH = ffprobe_in_exe_dir
-            return ffprobe_in_exe_dir
-
-        # 检查_internal目录
-        internal_dir = os.path.join(exe_dir, '_internal')
-        ffprobe_in_internal = os.path.join(internal_dir, 'ffprobe.exe')
-        if os.path.exists(ffprobe_in_internal):
-            FFPROBE_PATH = ffprobe_in_internal
-            return ffprobe_in_internal
-
-    # 尝试常见路径（与ffmpeg同目录）
-    ffmpeg_path = _find_ffmpeg()
-    if ffmpeg_path and ffmpeg_path != 'ffmpeg':
-        ffmpeg_dir = os.path.dirname(ffmpeg_path)
-        ffprobe_path = os.path.join(ffmpeg_dir, 'ffprobe.exe')
-        if os.path.exists(ffprobe_path):
-            FFPROBE_PATH = ffprobe_path
-            return ffprobe_path
 
     return 'ffprobe'  # 返回默认名称
 

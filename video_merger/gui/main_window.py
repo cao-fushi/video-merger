@@ -18,9 +18,10 @@ from ..core.combination import (
     generate_combinations, generate_random_combinations,
     generate_sequential_combinations, estimate_combination_count
 )
-from ..core.video_merger import MergeConfig, batch_merge_videos
+from ..core.video_merger import MergeConfig, batch_merge_videos, _check_nvenc_available
 from ..core.ffmpeg_utils import check_ffmpeg_installed
 from ..core.config_manager import get_config_manager
+from ..core.system_check import run_system_check
 
 
 class MergeThread(QThread):
@@ -74,13 +75,8 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.load_config_to_gui()
 
-        # 检查FFmpeg
-        if not check_ffmpeg_installed():
-            QMessageBox.warning(
-                self, "环境检测",
-                "未检测到FFmpeg，请先安装FFmpeg并添加到系统PATH环境变量。\n\n"
-                "下载地址: https://ffmpeg.org/download.html"
-            )
+        # 首次运行检查
+        self._first_run_check()
 
     def init_ui(self):
         """初始化界面"""
@@ -520,6 +516,33 @@ class MainWindow(QMainWindow):
         performance_layout = QVBoxLayout(performance_group)
         performance_layout.setSpacing(14)
 
+        # 编码器选择
+        performance_layout.addWidget(self._create_form_label("编码方式"))
+
+        # 检测NVENC是否可用
+        nvenc_available = _check_nvenc_available()
+
+        self.encoder_combo = QComboBox()
+        if nvenc_available:
+            self.encoder_combo.addItems(["NVIDIA显卡加速 (推荐)", "仅使用CPU"])
+            self.encoder_combo.setToolTip("NVIDIA显卡加速可大幅提升合成速度")
+        else:
+            self.encoder_combo.addItems(["仅使用CPU (未检测到NVIDIA显卡)"])
+            self.encoder_combo.setEnabled(False)
+            self.encoder_combo.setToolTip("未检测到NVIDIA显卡或NVENC不支持")
+
+        performance_layout.addWidget(self.encoder_combo)
+
+        # 显示显卡信息
+        gpu_info_label = QLabel()
+        if nvenc_available:
+            gpu_info_label.setText("✅ 检测到NVIDIA显卡，支持硬件加速")
+            gpu_info_label.setStyleSheet("color: #00b42a; font-size: 12px;")
+        else:
+            gpu_info_label.setText("⚠️ 未检测到NVIDIA显卡，将使用CPU编码（速度较慢）")
+            gpu_info_label.setStyleSheet("color: #ff7d00; font-size: 12px;")
+        performance_layout.addWidget(gpu_info_label)
+
         # 并行线程数
         performance_layout.addWidget(self._create_form_label("并行合成线程数"))
         workers_layout = QHBoxLayout()
@@ -542,7 +565,7 @@ class MainWindow(QMainWindow):
         performance_layout.addWidget(self.overwrite_cb)
 
         # 提示
-        perf_hint = QLabel("💡 增加并行线程数可提升合成速度，但会占用更多内存和CPU")
+        perf_hint = QLabel("💡 使用NVIDIA显卡加速可大幅提升合成速度；增加并行线程数可同时处理更多视频")
         perf_hint.setObjectName("label_hint")
         perf_hint.setStyleSheet("color: #8f959e; font-size: 12px; padding: 4px 0;")
         perf_hint.setWordWrap(True)
@@ -1094,9 +1117,14 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
-        # 硬件加速模式
-        hw_accel_map = {0: "auto", 1: "nvenc", 2: "cpu"}
-        hw_accel = hw_accel_map.get(self.hw_accel_combo.currentIndex(), "auto")
+        # 编码器选择
+        nvenc_available = _check_nvenc_available()
+        if nvenc_available:
+            # 有NVIDIA显卡时，根据用户选择
+            hw_accel = "nvenc" if self.encoder_combo.currentIndex() == 0 else "cpu"
+        else:
+            # 没有NVIDIA显卡，使用CPU
+            hw_accel = "cpu"
 
         # 转场效果
         transition_map = {
@@ -1237,6 +1265,9 @@ class MainWindow(QMainWindow):
 
             # 性能配置
             perf_config = config.get("性能配置", {})
+            encoder_idx = perf_config.get("编码方式", 0)
+            if encoder_idx < self.encoder_combo.count():
+                self.encoder_combo.setCurrentIndex(encoder_idx)
             self.workers_spin.setValue(perf_config.get("并行线程数", 2))
             self.overwrite_cb.setChecked(perf_config.get("覆盖已存在文件", True))
 
@@ -1278,6 +1309,7 @@ class MainWindow(QMainWindow):
                     "淡入淡出时长": self.audio_fade_duration_spin.value()
                 },
                 "性能配置": {
+                    "编码方式": self.encoder_combo.currentIndex(),
                     "并行线程数": self.workers_spin.value(),
                     "覆盖已存在文件": self.overwrite_cb.isChecked()
                 },
@@ -1296,3 +1328,49 @@ class MainWindow(QMainWindow):
         """窗口关闭事件"""
         self.save_config_from_gui()
         event.accept()
+
+    def _first_run_check(self):
+        """首次运行检查"""
+        # 检查是否已经运行过检查
+        check_done = self.config_manager.get("系统配置", "检查完成", False)
+        if check_done:
+            self.log("✅ 系统环境已就绪")
+            return
+
+        self.log("🔍 正在检查系统环境...")
+        QApplication.processEvents()  # 刷新界面
+
+        # 运行系统检查
+        all_passed, results = run_system_check()
+
+        # 显示检查结果
+        passed_count = sum(1 for r in results if r['passed'])
+        failed_count = sum(1 for r in results if not r['passed'])
+
+        self.log(f"📋 环境检查完成: {passed_count}通过, {failed_count}失败")
+
+        for r in results:
+            status = "✅" if r['passed'] else "❌"
+            self.log(f"  {status} {r['name']}: {r['message']}")
+            if r['suggestion'] and not r['passed']:
+                self.log(f"     💡 建议: {r['suggestion']}")
+
+        # 保存检查结果
+        self.config_manager.set("系统配置", "检查完成", True)
+        self.config_manager.set("系统配置", "检查结果", all_passed)
+        self.config_manager.save_config()
+
+        # 如果有失败项，显示警告
+        if not all_passed:
+            failed_items = [r for r in results if not r['passed']]
+            warning_text = "部分环境检查未通过：\n\n"
+            for r in failed_items:
+                warning_text += f"• {r['name']}: {r['message']}\n"
+                if r['suggestion']:
+                    warning_text += f"  建议: {r['suggestion']}\n"
+
+            warning_text += "\n程序仍可使用，但部分功能可能受限。"
+
+            QMessageBox.warning(self, "环境检查", warning_text)
+        else:
+            self.log("✅ 所有环境检查通过，程序可以正常使用！")
