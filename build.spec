@@ -7,7 +7,10 @@ block_cipher = None
 a = Analysis(
     ['video_merger/main.py'],
     pathex=[],
-    binaries=[],
+    binaries=[
+        # 添加ffprobe
+        ('D:/123/ai/TRAE SOLO CN/resources/app/bin/ffprobe.exe', '.'),
+    ],
     datas=[
         ('video_merger/config', 'video_merger/config'),
     ],

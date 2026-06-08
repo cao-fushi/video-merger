@@ -2,6 +2,7 @@
 import subprocess
 import shutil
 import os
+import sys
 from typing import Optional, Tuple
 
 # Windows下隐藏命令行窗口的标志
@@ -76,6 +77,22 @@ def _find_ffprobe() -> str:
     if path:
         return path
 
+    # 尝试从exe所在目录查找（打包后的环境）
+    if getattr(sys, 'frozen', False):
+        # PyInstaller打包后的环境
+        exe_dir = os.path.dirname(sys.executable)
+        ffprobe_in_exe_dir = os.path.join(exe_dir, 'ffprobe.exe')
+        if os.path.exists(ffprobe_in_exe_dir):
+            FFPROBE_PATH = ffprobe_in_exe_dir
+            return ffprobe_in_exe_dir
+
+        # 检查_internal目录
+        internal_dir = os.path.join(exe_dir, '_internal')
+        ffprobe_in_internal = os.path.join(internal_dir, 'ffprobe.exe')
+        if os.path.exists(ffprobe_in_internal):
+            FFPROBE_PATH = ffprobe_in_internal
+            return ffprobe_in_internal
+
     # 尝试常见路径（与ffmpeg同目录）
     ffmpeg_path = _find_ffmpeg()
     if ffmpeg_path and ffmpeg_path != 'ffmpeg':
@@ -84,12 +101,6 @@ def _find_ffprobe() -> str:
         if os.path.exists(ffprobe_path):
             FFPROBE_PATH = ffprobe_path
             return ffprobe_path
-
-    # 使用TRAE的ffprobe（精简版但ffprobe功能足够）
-    trae_ffprobe = "D:/123/ai/TRAE SOLO CN/resources/app/bin/ffprobe.exe"
-    if os.path.exists(trae_ffprobe):
-        FFPROBE_PATH = trae_ffprobe
-        return trae_ffprobe
 
     return 'ffprobe'  # 返回默认名称
 
