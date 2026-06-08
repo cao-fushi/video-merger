@@ -5,6 +5,15 @@ from typing import List, Optional, Tuple
 from .video_info import VideoInfo
 
 
+def _find_video_in_list(videos: List[VideoInfo], target: VideoInfo) -> Optional[VideoInfo]:
+    """在列表中查找视频（通过路径匹配）"""
+    target_path = target.视频路径.replace('\\', '/').lower()
+    for v in videos:
+        if v.视频路径.replace('\\', '/').lower() == target_path:
+            return v
+    return None
+
+
 def generate_combinations(
     videos: List[VideoInfo],
     group_size: int = 2,
@@ -30,8 +39,14 @@ def generate_combinations(
 
     # 如果指定了开头视频
     if start_video:
+        # 在videos列表中找到对应的视频对象
+        actual_start = _find_video_in_list(videos, start_video)
+        if not actual_start:
+            # 如果找不到，使用传入的start_video
+            actual_start = start_video
+
         # 获取剩余视频（排除开头视频）
-        remaining = [v for v in videos if v.视频路径 != start_video.视频路径]
+        remaining = [v for v in videos if v.视频路径.replace('\\', '/').lower() != actual_start.视频路径.replace('\\', '/').lower()]
 
         if not remaining:
             return []
@@ -48,7 +63,7 @@ def generate_combinations(
 
         # 使用排列（考虑顺序）
         for perm in permutations(remaining, select_count):
-            combo = [start_video] + list(perm)
+            combo = [actual_start] + list(perm)
             all_combinations.append(combo)
 
         # 如果需要限制数量
@@ -110,14 +125,19 @@ def generate_random_combinations(
 
     for _ in range(count):
         if start_video:
-            # 指定了开头视频
-            remaining = [v for v in videos if v.视频路径 != start_video.视频路径]
+            # 指定了开头视频，在列表中找到它
+            actual_start = _find_video_in_list(videos, start_video)
+            if not actual_start:
+                actual_start = start_video
+
+            # 获取剩余视频
+            remaining = [v for v in videos if v.视频路径.replace('\\', '/').lower() != actual_start.视频路径.replace('\\', '/').lower()]
             if not remaining:
                 break
 
             select_count = min(group_size - 1, len(remaining))
             selected = random.sample(remaining, select_count)
-            combo = [start_video] + selected
+            combo = [actual_start] + selected
         else:
             # 随机选择开头视频
             if len(videos) < group_size:
