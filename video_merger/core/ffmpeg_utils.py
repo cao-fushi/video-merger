@@ -107,6 +107,11 @@ def _find_ffprobe() -> str:
         os.path.join(base_dir, 'ffprobe.exe'),
         # 与ffmpeg同目录
         os.path.join(os.path.dirname(_find_ffmpeg()), 'ffprobe.exe'),
+        # TRAE的ffprobe
+        "D:/123/ai/TRAE SOLO CN/resources/app/bin/ffprobe.exe",
+        # 系统常见路径
+        "C:/ffmpeg/bin/ffprobe.exe",
+        "C:/Program Files/ffmpeg/bin/ffprobe.exe",
     ]
 
     # 遍历搜索路径
