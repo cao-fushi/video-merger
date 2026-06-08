@@ -1,12 +1,21 @@
-"""视频合并核心模块 - 使用FFmpeg合并视频"""
+"""视频合并核心模块 - 使用FFmpeg合并视频（优化版）"""
 import subprocess
 import os
 import tempfile
+import logging
 from typing import List, Optional, Callable, Tuple
 from pathlib import Path
 from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from .video_info import VideoInfo
 from .ffmpeg_utils import _find_ffmpeg, _run_subprocess
+
+# 配置日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Windows下隐藏命令行窗口的标志
+CREATE_NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
 
 
 def _check_nvenc_available() -> bool:
@@ -15,7 +24,8 @@ def _check_nvenc_available() -> bool:
     try:
         result = _run_subprocess([ffmpeg, '-encoders'], capture_output=True, text=True, timeout=5)
         return 'h264_nvenc' in result.stdout
-    except:
+    except Exception as e:
+        logger.warning(f"检查NVENC失败: {e}")
         return False
 
 
@@ -30,8 +40,87 @@ class MergeConfig:
     quality: str = "high"  # 质量: low, medium, high
     crop_black_bars: bool = False  # 裁剪黑边
     hardware_accel: str = "auto"  # 硬件加速: auto, nvenc, qsv, amf, cpu
-    transition: str = "none"  # 转场效果: none, fade, dissolve, wipe_left, wipe_right, slide_left, slide_right
+    transition: str = "none"  # 转场效果
     transition_duration: float = 0.5  # 转场时长（秒）
+    audio_fade: bool = True  # 音频淡入淡出
+    audio_fade_duration: float = 0.5  # 音频淡入淡出时长（秒）
+    max_workers: int = 2  # 并行合成线程数
+    overwrite_existing: bool = True  # 是否覆盖已存在的文件
+
+
+def _get_transition_filter(transition: str, duration: float, idx: int, offset: float) -> str:
+    """生成转场滤镜"""
+    if transition == "none":
+        return ""
+
+    transitions = {
+        "fade": "fade",
+        "dissolve": "dissolve",
+        "wipe_left": "wipeleft",
+        "wipe_right": "wiperight",
+        "slide_left": "slideleft",
+        "slide_right": "slideright",
+        "smooth_left": "smoothleft",
+        "smooth_right": "smoothright",
+        "circle_open": "circleopen",
+        "circle_close": "circleclose",
+        "pixelize": "pixelize",
+        "radial": "radial",
+        "diag_bl": "diagbl",
+        "diag_br": "diagbr",
+    }
+
+    xfade_type = transitions.get(transition, "fade")
+    return f"xfade=transition={xfade_type}:duration={duration}:offset={offset}"
+
+
+def _get_audio_fade_filter(duration: float, fade_in: bool = True, fade_out: bool = True) -> str:
+    """生成音频淡入淡出滤镜"""
+    filters = []
+    if fade_in:
+        filters.append(f"afade=t=in:st=0:d={duration}")
+    if fade_out:
+        # 淡出需要知道总时长，这里先返回淡入部分
+        pass
+    return ','.join(filters) if filters else None
+
+
+def _get_video_duration(video_path: str) -> float:
+    """获取视频时长（秒）"""
+    try:
+        from .ffmpeg_utils import _find_ffprobe
+        ffprobe = _find_ffprobe()
+        cmd = [
+            ffprobe, '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            video_path
+        ]
+        result = _run_subprocess(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            return float(result.stdout.strip())
+    except Exception as e:
+        logger.warning(f"获取视频时长失败 {video_path}: {e}")
+    return 0.0
+
+
+def _check_audio_streams(video_paths: List[str]) -> bool:
+    """检查视频文件是否有音频流"""
+    try:
+        from .ffmpeg_utils import _find_ffprobe
+        ffprobe = _find_ffprobe()
+        cmd = [
+            ffprobe, '-v', 'error',
+            '-select_streams', 'a',
+            '-show_entries', 'stream=codec_type',
+            '-of', 'csv=p=0',
+            video_paths[0]
+        ]
+        result = _run_subprocess(cmd, capture_output=True, text=True, timeout=30)
+        return 'audio' in result.stdout
+    except Exception as e:
+        logger.warning(f"检查音频流失败: {e}")
+    return False
 
 
 def _get_encoder_cmd(config: MergeConfig) -> list:
@@ -72,91 +161,24 @@ def _get_encoder_cmd(config: MergeConfig) -> list:
     return cmd
 
 
+def _generate_output_path(config: MergeConfig, idx: int, combo: List[VideoInfo]) -> str:
+    """生成输出文件路径，处理文件名冲突"""
+    file_name = f"{config.file_prefix}_{idx + 1:03d}.mp4"
 
+    if config.output_dir:
+        output_path = os.path.join(config.output_dir, file_name)
+    else:
+        output_path = file_name
 
-def _get_transition_filter(transition: str, duration: float, idx: int, offset: float) -> str:
-    """
-    生成转场滤镜
+    # 处理文件名冲突
+    if not config.overwrite_existing and os.path.exists(output_path):
+        base, ext = os.path.splitext(output_path)
+        counter = 1
+        while os.path.exists(f"{base}_{counter}{ext}"):
+            counter += 1
+        output_path = f"{base}_{counter}{ext}"
 
-    Args:
-        transition: 转场类型
-        duration: 转场时长（秒）
-        idx: 当前视频索引
-        offset: 转场开始时间（秒）
-
-    Returns:
-        FFmpeg滤镜字符串
-    """
-    if transition == "none":
-        return ""
-
-    # xfade转场效果
-    transitions = {
-        "fade": "fade",
-        "dissolve": "dissolve",
-        "wipe_left": "wipeleft",
-        "wipe_right": "wiperight",
-        "slide_left": "slideleft",
-        "slide_right": "slideright",
-        "smooth_left": "smoothleft",
-        "smooth_right": "smoothright",
-        "circle_open": "circleopen",
-        "circle_close": "circleclose",
-        "pixelize": "pixelize",
-        "radial": "radial",
-        "horzopen": "horzopen",
-        "horzclose": "horzclose",
-        "vertopen": "vertopen",
-        "vertclose": "vertclose",
-        "diag_bl": "diagbl",
-        "diag_br": "diagbr",
-        "hlslice": "hlslice",
-        "hrslice": "hrslice",
-        "vuslice": "vuslice",
-        "vdslice": "vdslice",
-    }
-
-    xfade_type = transitions.get(transition, "fade")
-    return f"xfade=transition={xfade_type}:duration={duration}:offset={offset}"
-
-
-def _get_video_duration(video_path: str) -> float:
-    """获取视频时长（秒）"""
-    try:
-        from .ffmpeg_utils import _find_ffprobe, _run_subprocess
-        ffprobe = _find_ffprobe()
-        cmd = [
-            ffprobe, '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            video_path
-        ]
-        result = _run_subprocess(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            return float(result.stdout.strip())
-    except:
-        pass
-    return 0.0
-
-
-def _check_audio_streams(video_paths: List[str]) -> bool:
-    """检查视频文件是否有音频流"""
-    try:
-        from .ffmpeg_utils import _find_ffprobe, _run_subprocess
-        ffprobe = _find_ffprobe()
-        # 只检查第一个视频
-        cmd = [
-            ffprobe, '-v', 'error',
-            '-select_streams', 'a',
-            '-show_entries', 'stream=codec_type',
-            '-of', 'csv=p=0',
-            video_paths[0]
-        ]
-        result = _run_subprocess(cmd, capture_output=True, text=True, timeout=30)
-        return 'audio' in result.stdout
-    except:
-        pass
-    return False
+    return output_path
 
 
 def merge_videos_concat(
@@ -166,7 +188,7 @@ def merge_videos_concat(
     progress_callback: Optional[Callable[[float, str], None]] = None
 ) -> Tuple[bool, str]:
     """
-    使用FFmpeg concat方式合并视频
+    使用FFmpeg concat方式合并视频（支持音频淡入淡出）
 
     Returns:
         (是否成功, 错误信息)
@@ -214,7 +236,7 @@ def merge_videos_concat(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             universal_newlines=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            creationflags=CREATE_NO_WINDOW if os.name == 'nt' else 0
         )
 
         stdout, stderr = process.communicate()
@@ -226,17 +248,65 @@ def merge_videos_concat(
         if not os.path.exists(output_path):
             return False, "输出文件未生成"
 
+        # 如果启用音频淡入淡出，单独处理音频
+        if config.audio_fade:
+            _apply_audio_fade(output_path, config)
+
         if progress_callback:
             progress_callback(1.0, "concat合并完成")
 
         return True, "成功"
 
     except Exception as e:
+        logger.error(f"concat合并异常: {e}")
         return False, f"异常: {str(e)}"
     finally:
         if filelist_path and os.path.exists(filelist_path):
             try:
                 os.unlink(filelist_path)
+            except:
+                pass
+
+
+def _apply_audio_fade(video_path: str, config: MergeConfig):
+    """对已合成的视频应用音频淡入淡出"""
+    ffmpeg = _find_ffmpeg()
+    temp_output = video_path + ".temp.mp4"
+
+    try:
+        duration = _get_video_duration(video_path)
+        if duration <= 0:
+            return
+
+        fade_duration = min(config.audio_fade_duration, duration / 4)
+
+        # 构建音频淡入淡出滤镜
+        audio_filter = f"afade=t=in:st=0:d={fade_duration},afade=t=out:st={duration - fade_duration}:d={fade_duration}"
+
+        cmd = [
+            ffmpeg, '-y',
+            '-i', video_path,
+            '-c:v', 'copy',
+            '-af', audio_filter,
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            temp_output
+        ]
+
+        result = _run_subprocess(cmd, capture_output=True, timeout=300)
+
+        if result.returncode == 0 and os.path.exists(temp_output):
+            os.replace(temp_output, video_path)
+            logger.info(f"音频淡入淡出已应用: {video_path}")
+        else:
+            logger.warning(f"音频淡入淡出应用失败")
+
+    except Exception as e:
+        logger.error(f"音频淡入淡出异常: {e}")
+    finally:
+        if os.path.exists(temp_output):
+            try:
+                os.unlink(temp_output)
             except:
                 pass
 
@@ -248,7 +318,7 @@ def merge_videos_filter_complex(
     progress_callback: Optional[Callable[[float, str], None]] = None
 ) -> Tuple[bool, str]:
     """
-    使用FFmpeg filter_complex方式合并视频（支持转场）
+    使用FFmpeg filter_complex方式合并视频（支持转场和音频淡入淡出）
 
     Returns:
         (是否成功, 错误信息)
@@ -259,6 +329,7 @@ def merge_videos_filter_complex(
     ffmpeg = _find_ffmpeg()
     n = len(video_paths)
     has_transition = config.transition != "none" and n >= 2
+    has_audio_fade = config.audio_fade and n >= 2
 
     try:
         cmd = [ffmpeg, '-y']
@@ -286,7 +357,7 @@ def merge_videos_filter_complex(
         if has_transition:
             for path in video_paths:
                 dur = _get_video_duration(path)
-                durations.append(dur if dur > 0 else 3.0)  # 默认3秒
+                durations.append(dur if dur > 0 else 3.0)
 
         for i in range(n):
             # 视频处理：统一分辨率和帧率
@@ -295,9 +366,14 @@ def merge_videos_filter_complex(
                 f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,"
                 f"setpts=PTS-STARTPTS,fps=25[v{i}]"
             )
-            # 音频处理（如果有音频流）
+            # 音频处理
             if has_audio:
-                audio_filters.append(f"[{i}:a]aresample=44100,asetpts=PTS-STARTPTS[a{i}]")
+                if has_audio_fade:
+                    # 添加音频淡入效果
+                    fade_duration = min(config.audio_fade_duration, durations[i] / 4 if has_transition else 1.0)
+                    audio_filters.append(f"[{i}:a]aresample=44100,asetpts=PTS-STARTPTS,afade=t=in:st=0:d={fade_duration}[a{i}]")
+                else:
+                    audio_filters.append(f"[{i}:a]aresample=44100,asetpts=PTS-STARTPTS[a{i}]")
 
         if has_transition:
             # 使用xfade转场
@@ -325,12 +401,22 @@ def merge_videos_filter_complex(
             # 最终视频输出
             final_video = f"[vt{n-1}]"
 
-            # 音频处理（使用concat拼接，不做转场）
+            # 音频处理
             if has_audio:
-                audio_inputs = ''.join(f'[a{i}]' for i in range(n))
-                audio_concat = f"{audio_inputs}concat=n={n}:v=0:a=1[outa]"
-                audio_filters.append(audio_concat)
-                final_audio = "[outa]"
+                if has_audio_fade:
+                    # 使用acrossfade实现音频交叉淡入淡出
+                    for i in range(1, n):
+                        if i == 1:
+                            audio_chain = f"[a0][a1]acrossfade=d={transition_duration}[at{i}]"
+                        else:
+                            audio_chain = f"[at{i-1}][a{i}]acrossfade=d={transition_duration}[at{i}]"
+                        audio_filters.append(audio_chain)
+                    final_audio = f"[at{n-1}]"
+                else:
+                    audio_inputs = ''.join(f'[a{i}]' for i in range(n))
+                    audio_concat = f"{audio_inputs}concat=n={n}:v=0:a=1[outa]"
+                    audio_filters.append(audio_concat)
+                    final_audio = "[outa]"
             else:
                 final_audio = None
         else:
@@ -367,7 +453,7 @@ def merge_videos_filter_complex(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             universal_newlines=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            creationflags=CREATE_NO_WINDOW if os.name == 'nt' else 0
         )
 
         stdout, stderr = process.communicate()
@@ -385,6 +471,7 @@ def merge_videos_filter_complex(
         return True, "成功"
 
     except Exception as e:
+        logger.error(f"filter_complex合并异常: {e}")
         return False, f"异常: {str(e)}"
 
 
@@ -418,10 +505,11 @@ def merge_videos(
     format_consistent = len(formats) <= 1
     need_preprocess = config.resolution is not None or config.fps is not None
     has_transition = config.transition != "none"
+    has_audio_fade = config.audio_fade
 
     # 选择合并方式
-    if has_transition:
-        # 有转场必须使用filter_complex
+    if has_transition or has_audio_fade:
+        # 有转场或音频淡入淡出，必须使用filter_complex
         if progress_callback:
             progress_callback(0, f"使用转场效果: {config.transition}")
         success, msg = merge_videos_filter_complex(video_paths, output_path, config, progress_callback)
@@ -439,12 +527,58 @@ def merge_videos(
         if progress_callback:
             progress_callback(0, f"第一种方式失败，尝试另一种...")
 
-        if format_consistent and not need_preprocess:
+        if has_transition or has_audio_fade:
+            # 转场/音频淡入淡出失败，尝试不使用
+            config_no_effects = MergeConfig(
+                output_dir=config.output_dir,
+                file_prefix=config.file_prefix,
+                resolution=config.resolution,
+                fps=config.fps,
+                codec=config.codec,
+                quality=config.quality,
+                hardware_accel=config.hardware_accel,
+                transition="none",
+                audio_fade=False
+            )
+            success, msg = merge_videos_concat(video_paths, output_path, config_no_effects, progress_callback)
+        elif format_consistent and not need_preprocess:
             success, msg = merge_videos_filter_complex(video_paths, output_path, config, progress_callback)
         else:
             success, msg = merge_videos_concat(video_paths, output_path, config, progress_callback)
 
     return success, msg
+
+
+def _merge_single_combo(idx: int, combo: List[VideoInfo], config: MergeConfig,
+                        total: int, progress_callback: Optional[Callable] = None) -> Tuple[int, bool, str, str]:
+    """合成单个组合（用于多线程）"""
+    output_path = _generate_output_path(config, idx, combo)
+
+    def local_progress(progress, status):
+        if progress_callback:
+            progress_callback(idx + 1, total, progress, status)
+
+    # 显示当前合成信息
+    video_names = [v.视频文件名称[:20] for v in combo]
+    if progress_callback:
+        progress_callback(idx + 1, total, 0, f"准备: {' + '.join(video_names)}")
+
+    # 检查视频文件
+    for v in combo:
+        if not os.path.exists(v.视频路径):
+            error_msg = f"文件不存在: {v.视频文件名称}"
+            return idx, False, output_path, error_msg
+
+    # 合并视频
+    try:
+        success, error_msg = merge_videos(combo, output_path, config, local_progress)
+    except Exception as e:
+        success, error_msg = False, f"合成异常: {str(e)}"
+
+    if success and os.path.exists(output_path):
+        return idx, True, output_path, "成功"
+    else:
+        return idx, False, output_path, error_msg
 
 
 def batch_merge_videos(
@@ -453,7 +587,7 @@ def batch_merge_videos(
     progress_callback: Optional[Callable[[int, int, float, str], None]] = None
 ) -> Tuple[int, int, List[str], List[str]]:
     """
-    批量合并视频
+    批量合并视频（支持多线程并行）
 
     Returns:
         (成功数, 失败数, 成功文件列表, 失败原因列表)
@@ -469,50 +603,59 @@ def batch_merge_videos(
     if config.output_dir:
         os.makedirs(config.output_dir, exist_ok=True)
 
-    for idx, combo in enumerate(combinations):
-        file_name = f"{config.file_prefix}_{idx + 1:03d}.mp4"
+    # 确定线程数（不超过组合数和CPU核心数）
+    max_workers = min(config.max_workers, total, os.cpu_count() or 1)
+    max_workers = max(1, max_workers)  # 至少1个线程
 
-        if config.output_dir:
-            output_path = os.path.join(config.output_dir, file_name)
-        else:
-            output_path = file_name
+    logger.info(f"开始批量合成: {total}个组合, {max_workers}个并行线程")
 
-        def local_progress(progress, status):
-            if progress_callback:
-                progress_callback(idx + 1, total, progress, status)
+    if max_workers <= 1:
+        # 单线程模式
+        for idx, combo in enumerate(combinations):
+            idx, success, output_path, error_msg = _merge_single_combo(
+                idx, combo, config, total, progress_callback
+            )
 
-        # 显示当前合成信息
-        video_names = [v.视频文件名称[:20] for v in combo]
-        if progress_callback:
-            progress_callback(idx + 1, total, 0, f"准备: {' + '.join(video_names)}")
-
-        # 检查视频文件
-        all_exist = True
-        for v in combo:
-            if not os.path.exists(v.视频路径):
-                error_msg = f"文件不存在: {v.视频文件名称}"
-                fail_reasons.append(error_msg)
+            if success:
+                success_count += 1
+                output_files.append(output_path)
                 if progress_callback:
-                    progress_callback(idx + 1, total, 0, error_msg)
-                all_exist = False
-                break
+                    progress_callback(idx + 1, total, 1.0, f"成功: {os.path.basename(output_path)}")
+            else:
+                fail_count += 1
+                fail_reasons.append(f"{os.path.basename(output_path)}: {error_msg}")
+                if progress_callback:
+                    progress_callback(idx + 1, total, 0, f"失败: {error_msg}")
+    else:
+        # 多线程模式
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            futures = []
+            for idx, combo in enumerate(combinations):
+                future = executor.submit(
+                    _merge_single_combo,
+                    idx, combo, config, total, progress_callback
+                )
+                futures.append(future)
 
-        if not all_exist:
-            fail_count += 1
-            continue
+            # 等待所有任务完成
+            for future in as_completed(futures):
+                try:
+                    idx, success, output_path, error_msg = future.result()
 
-        # 合并视频
-        success, error_msg = merge_videos(combo, output_path, config, local_progress)
+                    if success:
+                        success_count += 1
+                        output_files.append(output_path)
+                        if progress_callback:
+                            progress_callback(idx + 1, total, 1.0, f"成功: {os.path.basename(output_path)}")
+                    else:
+                        fail_count += 1
+                        fail_reasons.append(f"{os.path.basename(output_path)}: {error_msg}")
+                        if progress_callback:
+                            progress_callback(idx + 1, total, 0, f"失败: {error_msg}")
+                except Exception as e:
+                    fail_count += 1
+                    fail_reasons.append(f"线程异常: {str(e)}")
 
-        if success and os.path.exists(output_path):
-            success_count += 1
-            output_files.append(output_path)
-            if progress_callback:
-                progress_callback(idx + 1, total, 1.0, f"成功: {file_name}")
-        else:
-            fail_count += 1
-            fail_reasons.append(f"{file_name}: {error_msg}")
-            if progress_callback:
-                progress_callback(idx + 1, total, 0, f"失败: {error_msg}")
-
+    logger.info(f"批量合成完成: 成功{success_count}, 失败{fail_count}")
     return success_count, fail_count, output_files, fail_reasons

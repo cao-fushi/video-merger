@@ -20,6 +20,7 @@ from ..core.combination import (
 )
 from ..core.video_merger import MergeConfig, batch_merge_videos
 from ..core.ffmpeg_utils import check_ffmpeg_installed
+from ..core.config_manager import get_config_manager
 
 
 class MergeThread(QThread):
@@ -68,8 +69,10 @@ class MainWindow(QMainWindow):
         self.videos: List[VideoInfo] = []
         self.merge_thread: Optional[MergeThread] = None
         self.start_video: Optional[VideoInfo] = None
+        self.config_manager = get_config_manager()
 
         self.init_ui()
+        self.load_config_to_gui()
 
         # 检查FFmpeg
         if not check_ffmpeg_installed():
@@ -475,6 +478,77 @@ class MainWindow(QMainWindow):
         transition_layout.addWidget(hint_label)
 
         scroll_layout.addWidget(transition_group)
+
+        # ===== 音频设置组 =====
+        audio_group = QGroupBox("音频设置")
+        audio_layout = QVBoxLayout(audio_group)
+        audio_layout.setSpacing(14)
+
+        # 音频淡入淡出
+        self.audio_fade_cb = QCheckBox("启用音频淡入淡出")
+        self.audio_fade_cb.setChecked(True)
+        self.audio_fade_cb.setToolTip("视频切换时音频平滑过渡，避免突然切换")
+        audio_layout.addWidget(self.audio_fade_cb)
+
+        # 淡入淡出时长
+        audio_fade_widget = QWidget()
+        audio_fade_layout = QHBoxLayout(audio_fade_widget)
+        audio_fade_layout.setContentsMargins(28, 0, 0, 0)
+
+        audio_fade_layout.addWidget(QLabel("淡入淡出时长:"))
+        self.audio_fade_duration_spin = QDoubleSpinBox()
+        self.audio_fade_duration_spin.setRange(0.1, 2.0)
+        self.audio_fade_duration_spin.setValue(0.5)
+        self.audio_fade_duration_spin.setSingleStep(0.1)
+        self.audio_fade_duration_spin.setSuffix(" 秒")
+        audio_fade_layout.addWidget(self.audio_fade_duration_spin)
+        audio_fade_layout.addStretch()
+
+        audio_layout.addWidget(audio_fade_widget)
+
+        # 提示
+        audio_hint = QLabel("💡 音频淡入淡出让声音过渡更自然，配合转场效果使用更佳")
+        audio_hint.setObjectName("label_hint")
+        audio_hint.setStyleSheet("color: #8f959e; font-size: 12px; padding: 4px 0;")
+        audio_hint.setWordWrap(True)
+        audio_layout.addWidget(audio_hint)
+
+        scroll_layout.addWidget(audio_group)
+
+        # ===== 性能设置组 =====
+        performance_group = QGroupBox("性能设置")
+        performance_layout = QVBoxLayout(performance_group)
+        performance_layout.setSpacing(14)
+
+        # 并行线程数
+        performance_layout.addWidget(self._create_form_label("并行合成线程数"))
+        workers_layout = QHBoxLayout()
+
+        self.workers_spin = QSpinBox()
+        self.workers_spin.setRange(1, 8)
+        self.workers_spin.setValue(2)
+        self.workers_spin.setToolTip("同时合成的视频数量，增加可提升速度，但会占用更多系统资源")
+        workers_layout.addWidget(self.workers_spin)
+
+        workers_layout.addWidget(QLabel(f"(CPU核心数: {os.cpu_count() or 1})"))
+        workers_layout.addStretch()
+
+        performance_layout.addLayout(workers_layout)
+
+        # 覆盖已存在文件
+        self.overwrite_cb = QCheckBox("覆盖已存在的文件")
+        self.overwrite_cb.setChecked(True)
+        self.overwrite_cb.setToolTip("如果输出目录已存在同名文件，是否覆盖")
+        performance_layout.addWidget(self.overwrite_cb)
+
+        # 提示
+        perf_hint = QLabel("💡 增加并行线程数可提升合成速度，但会占用更多内存和CPU")
+        perf_hint.setObjectName("label_hint")
+        perf_hint.setStyleSheet("color: #8f959e; font-size: 12px; padding: 4px 0;")
+        perf_hint.setWordWrap(True)
+        performance_layout.addWidget(perf_hint)
+
+        scroll_layout.addWidget(performance_group)
 
         scroll_layout.addStretch()
 
@@ -1034,6 +1108,14 @@ class MainWindow(QMainWindow):
         transition = transition_map.get(self.transition_combo.currentIndex(), "none")
         transition_duration = self.transition_duration_spin.value()
 
+        # 音频设置
+        audio_fade = self.audio_fade_cb.isChecked()
+        audio_fade_duration = self.audio_fade_duration_spin.value()
+
+        # 性能设置
+        max_workers = self.workers_spin.value()
+        overwrite_existing = self.overwrite_cb.isChecked()
+
         # 创建合并配置
         config = MergeConfig(
             output_dir=output_dir,
@@ -1044,12 +1126,20 @@ class MainWindow(QMainWindow):
             quality=["high", "medium", "low"][self.quality_combo.currentIndex()],
             hardware_accel=hw_accel,
             transition=transition,
-            transition_duration=transition_duration
+            transition_duration=transition_duration,
+            audio_fade=audio_fade,
+            audio_fade_duration=audio_fade_duration,
+            max_workers=max_workers,
+            overwrite_existing=overwrite_existing
         )
 
         # 显示配置信息
         if transition != "none":
             self.log(f"🎬 转场效果: {transition}, 时长: {transition_duration}秒")
+        if audio_fade:
+            self.log(f"🔊 音频淡入淡出: 已启用, 时长: {audio_fade_duration}秒")
+        if max_workers > 1:
+            self.log(f"⚡ 并行合成: {max_workers}个线程")
 
         # 禁用按钮
         self.btn_start.setEnabled(False)
@@ -1112,3 +1202,97 @@ class MainWindow(QMainWindow):
         # 滚动到底部
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+    def load_config_to_gui(self):
+        """从配置文件加载设置到GUI"""
+        try:
+            config = self.config_manager.get_all()
+
+            # 合成配置
+            synth_config = config.get("合成配置", {})
+            self.group_size_spin.setValue(synth_config.get("每组片段数", 2))
+            self.start_mode_combo.setCurrentIndex(synth_config.get("开头模式", 0))
+            self.count_mode_combo.setCurrentIndex(synth_config.get("合成数量模式", 0))
+            self.count_spin.setValue(synth_config.get("自定义数量", 100))
+            self.prefix_edit.setText(synth_config.get("文件前缀", "合成视频"))
+
+            # 预处理配置
+            preprocess_config = config.get("预处理配置", {})
+            self.enable_resolution_cb.setChecked(preprocess_config.get("统一分辨率", False))
+            self.enable_fps_cb.setChecked(preprocess_config.get("统一帧率", False))
+            self.fps_spin.setValue(preprocess_config.get("帧率", 30))
+            self.codec_combo.setCurrentIndex(preprocess_config.get("编码器", 0))
+            self.quality_combo.setCurrentIndex(preprocess_config.get("质量", 1))
+            self.hw_accel_combo.setCurrentIndex(preprocess_config.get("硬件加速", 0))
+
+            # 转场配置
+            transition_config = config.get("转场配置", {})
+            self.transition_combo.setCurrentIndex(transition_config.get("转场类型", 0))
+            self.transition_duration_spin.setValue(transition_config.get("转场时长", 0.5))
+
+            # 音频配置
+            audio_config = config.get("音频配置", {})
+            self.audio_fade_cb.setChecked(audio_config.get("音频淡入淡出", True))
+            self.audio_fade_duration_spin.setValue(audio_config.get("淡入淡出时长", 0.5))
+
+            # 性能配置
+            perf_config = config.get("性能配置", {})
+            self.workers_spin.setValue(perf_config.get("并行线程数", 2))
+            self.overwrite_cb.setChecked(perf_config.get("覆盖已存在文件", True))
+
+            # 路径配置
+            path_config = config.get("路径配置", {})
+            self.output_dir_edit.setText(path_config.get("输出目录", ""))
+
+            self.log("✅ 已加载上次的配置")
+
+        except Exception as e:
+            self.log(f"⚠️ 加载配置失败: {e}")
+
+    def save_config_from_gui(self):
+        """从GUI保存配置到文件"""
+        try:
+            gui_data = {
+                "合成配置": {
+                    "每组片段数": self.group_size_spin.value(),
+                    "开头模式": self.start_mode_combo.currentIndex(),
+                    "合成数量模式": self.count_mode_combo.currentIndex(),
+                    "自定义数量": self.count_spin.value(),
+                    "文件前缀": self.prefix_edit.text()
+                },
+                "预处理配置": {
+                    "统一分辨率": self.enable_resolution_cb.isChecked(),
+                    "分辨率": self.resolution_combo.currentText().split(" ")[0],
+                    "统一帧率": self.enable_fps_cb.isChecked(),
+                    "帧率": self.fps_spin.value(),
+                    "编码器": self.codec_combo.currentIndex(),
+                    "质量": self.quality_combo.currentIndex(),
+                    "硬件加速": self.hw_accel_combo.currentIndex()
+                },
+                "转场配置": {
+                    "转场类型": self.transition_combo.currentIndex(),
+                    "转场时长": self.transition_duration_spin.value()
+                },
+                "音频配置": {
+                    "音频淡入淡出": self.audio_fade_cb.isChecked(),
+                    "淡入淡出时长": self.audio_fade_duration_spin.value()
+                },
+                "性能配置": {
+                    "并行线程数": self.workers_spin.value(),
+                    "覆盖已存在文件": self.overwrite_cb.isChecked()
+                },
+                "路径配置": {
+                    "输出目录": self.output_dir_edit.text()
+                }
+            }
+
+            self.config_manager.update_from_gui(gui_data)
+            self.log("💾 配置已保存")
+
+        except Exception as e:
+            self.log(f"⚠️ 保存配置失败: {e}")
+
+    def closeEvent(self, event):
+        """窗口关闭事件"""
+        self.save_config_from_gui()
+        event.accept()
