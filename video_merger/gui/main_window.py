@@ -5,7 +5,7 @@ from typing import List, Optional
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog,
-    QLabel, QSpinBox, QComboBox, QLineEdit, QCheckBox, QGroupBox,
+    QLabel, QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit, QCheckBox, QGroupBox,
     QProgressBar, QTextEdit, QMessageBox, QSplitter, QFrame,
     QAbstractItemView, QMenu, QAction, QDialog
 )
