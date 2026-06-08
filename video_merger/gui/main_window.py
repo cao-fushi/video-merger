@@ -992,6 +992,24 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "警告", "无法生成合成方案")
             return
 
+        # 检查分辨率一致性
+        if not self.enable_resolution_cb.isChecked():
+            # 获取所有选中视频的分辨率
+            resolutions = set(v.视频分辨率 for v in selected_videos)
+            if len(resolutions) > 1:
+                res_list = '\n'.join(f"  • {r}" for r in sorted(resolutions))
+                reply = QMessageBox.warning(
+                    self, "分辨率不一致",
+                    f"检测到选中的视频包含不同的分辨率：\n\n{res_list}\n\n"
+                    "合成时可能会出现画面变形或黑边。\n"
+                    "建议：勾选「统一分辨率」选项后再合成。\n\n"
+                    "是否继续合成？",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                if reply != QMessageBox.Yes:
+                    return
+
         # 确认
         reply = QMessageBox.question(
             self, "确认合成",

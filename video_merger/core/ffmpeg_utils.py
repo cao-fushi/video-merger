@@ -4,6 +4,16 @@ import shutil
 import os
 from typing import Optional, Tuple
 
+# Windows下隐藏命令行窗口的标志
+CREATE_NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
+
+
+def _run_subprocess(cmd, **kwargs):
+    """运行subprocess命令，自动添加CREATE_NO_WINDOW标志"""
+    if os.name == 'nt':
+        kwargs.setdefault('creationflags', CREATE_NO_WINDOW)
+    return subprocess.run(cmd, **kwargs)
+
 # FFmpeg路径配置 - 可以手动指定FFmpeg路径
 FFMPEG_PATH = None  # 例如: "C:/ffmpeg/bin/ffmpeg.exe"
 FFPROBE_PATH = None  # 例如: "C:/ffmpeg/bin/ffprobe.exe"
@@ -113,7 +123,7 @@ def get_ffmpeg_version() -> Optional[str]:
     """获取FFmpeg版本"""
     try:
         ffmpeg = _find_ffmpeg()
-        result = subprocess.run(
+        result = _run_subprocess(
             [ffmpeg, '-version'],
             capture_output=True,
             text=True
@@ -138,7 +148,7 @@ def get_video_duration(video_path: str) -> float:
             '-of', 'default=noprint_wrappers=1:nokey=1',
             video_path
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = _run_subprocess(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
             return float(result.stdout.strip())
         return 0.0
@@ -158,7 +168,7 @@ def get_video_resolution(video_path: str) -> Optional[Tuple[int, int]]:
             '-of', 'csv=s=x:p=0',
             video_path
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = _run_subprocess(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
             parts = result.stdout.strip().split('x')
             if len(parts) == 2:
@@ -180,7 +190,7 @@ def get_video_fps(video_path: str) -> Optional[float]:
             '-of', 'default=noprint_wrappers=1:nokey=1',
             video_path
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = _run_subprocess(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
             fps_str = result.stdout.strip()
             if '/' in fps_str:
@@ -221,7 +231,7 @@ def extract_video_segment(
             '-avoid_negative_ts', 'make_zero',
             output_path
         ]
-        result = subprocess.run(cmd, capture_output=True)
+        result = _run_subprocess(cmd, capture_output=True, timeout=300)
         return result.returncode == 0
     except:
         return False

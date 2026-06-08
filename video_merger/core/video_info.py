@@ -71,12 +71,18 @@ def get_video_info(video_path: str) -> Optional[VideoInfo]:
             video_path
         ]
 
+        # 设置超时时间，大文件可能需要更长时间
+        file_size = os.path.getsize(video_path)
+        timeout = max(30, min(300, file_size // (1024 * 1024)))  # 根据文件大小动态调整超时
+
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             encoding='utf-8',
-            errors='replace'
+            errors='replace',
+            timeout=timeout,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         )
 
         if result.returncode != 0:

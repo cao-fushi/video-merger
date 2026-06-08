@@ -47,13 +47,15 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,
+    console=False,  # 不显示命令行窗口
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
     icon=None,
+    uac_admin=False,
+    uac_uiaccess=False,
 )
 
 coll = COLLECT(

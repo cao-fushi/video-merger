@@ -6,14 +6,14 @@ from typing import List, Optional, Callable, Tuple
 from pathlib import Path
 from dataclasses import dataclass, field
 from .video_info import VideoInfo
-from .ffmpeg_utils import _find_ffmpeg
+from .ffmpeg_utils import _find_ffmpeg, _run_subprocess
 
 
 def _check_nvenc_available() -> bool:
     """检查NVENC是否可用"""
     ffmpeg = _find_ffmpeg()
     try:
-        result = subprocess.run([ffmpeg, '-encoders'], capture_output=True, text=True, timeout=5)
+        result = _run_subprocess([ffmpeg, '-encoders'], capture_output=True, text=True, timeout=5)
         return 'h264_nvenc' in result.stdout
     except:
         return False
@@ -213,7 +213,8 @@ def merge_videos_concat(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            universal_newlines=True
+            universal_newlines=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         )
 
         stdout, stderr = process.communicate()
@@ -365,7 +366,8 @@ def merge_videos_filter_complex(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            universal_newlines=True
+            universal_newlines=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         )
 
         stdout, stderr = process.communicate()
