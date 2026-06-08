@@ -1,4 +1,4 @@
-"""主窗口模块 - 视频批量合成工具GUI"""
+"""主窗口模块 - 视频批量合成工具GUI (现代化设计)"""
 import sys
 import os
 from typing import List, Optional
@@ -7,10 +7,10 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog,
     QLabel, QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit, QCheckBox, QGroupBox,
     QProgressBar, QTextEdit, QMessageBox, QSplitter, QFrame,
-    QAbstractItemView, QMenu, QAction, QDialog
+    QAbstractItemView, QMenu, QAction, QDialog, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt5.QtGui import QIcon, QFont, QColor
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QPropertyAnimation, QEasingCurve
+from PyQt5.QtGui import QIcon, QFont, QColor, QPalette, QPainter, QLinearGradient
 
 from ..core.video_info import VideoInfo, get_video_info, batch_get_video_info
 from ..core.combination import (
@@ -23,8 +23,8 @@ from ..core.ffmpeg_utils import check_ffmpeg_installed
 
 class MergeThread(QThread):
     """合并线程"""
-    progress_updated = pyqtSignal(int, int, float, str)  # 当前索引, 总数, 进度, 状态
-    finished_signal = pyqtSignal(int, int, list, list)  # 成功数, 失败数, 输出文件列表, 失败原因列表
+    progress_updated = pyqtSignal(int, int, float, str)
+    finished_signal = pyqtSignal(int, int, list, list)
 
     def __init__(self, combinations, config):
         super().__init__()
@@ -50,6 +50,23 @@ class MergeThread(QThread):
         self._is_cancelled = True
 
 
+class SectionTitle(QLabel):
+    """分段标题组件"""
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("label_title")
+        self.setStyleSheet("""
+            QLabel#label_title {
+                color: #00d4ff;
+                font-size: 13px;
+                font-weight: bold;
+                padding: 4px 0px;
+                border-bottom: 2px solid #00d4ff;
+                margin-bottom: 8px;
+            }
+        """)
+
+
 class MainWindow(QMainWindow):
     """主窗口"""
 
@@ -71,8 +88,8 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         """初始化界面"""
-        self.setWindowTitle("视频批量合成工具")
-        self.setMinimumSize(1000, 700)
+        self.setWindowTitle("视频批量合成工具 v2.0")
+        self.setMinimumSize(1200, 800)
 
         # 中央部件
         central_widget = QWidget()
@@ -80,66 +97,102 @@ class MainWindow(QMainWindow):
 
         # 主布局
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(16, 16, 16, 16)
 
-        # 工具栏
-        toolbar_layout = QHBoxLayout()
+        # ========== 顶部工具栏 ==========
+        toolbar_widget = QWidget()
+        toolbar_widget.setStyleSheet("""
+            QWidget {
+                background-color: #16213e;
+                border-radius: 8px;
+                padding: 8px;
+            }
+        """)
+        toolbar_layout = QHBoxLayout(toolbar_widget)
+        toolbar_layout.setSpacing(8)
+        toolbar_layout.setContentsMargins(12, 8, 12, 8)
 
-        btn_add_files = QPushButton("添加视频文件")
+        # 左侧按钮组
+        btn_add_files = self._create_tool_button("添加文件", "#00d4ff")
         btn_add_files.clicked.connect(self.add_video_files)
-        toolbar_layout.addWidget(btn_add_files)
 
-        btn_add_folder = QPushButton("添加文件夹")
+        btn_add_folder = self._create_tool_button("添加文件夹", "#00d4ff")
         btn_add_folder.clicked.connect(self.add_video_folder)
-        toolbar_layout.addWidget(btn_add_folder)
 
-        btn_load_json = QPushButton("从JSON加载")
+        btn_load_json = self._create_tool_button("导入JSON", "#ffa500")
         btn_load_json.clicked.connect(self.load_from_json)
-        toolbar_layout.addWidget(btn_load_json)
 
-        btn_save_json = QPushButton("保存为JSON")
+        btn_save_json = self._create_tool_button("导出JSON", "#ffa500")
         btn_save_json.clicked.connect(self.save_to_json)
-        toolbar_layout.addWidget(btn_save_json)
 
+        toolbar_layout.addWidget(btn_add_files)
+        toolbar_layout.addWidget(btn_add_folder)
+        toolbar_layout.addSpacing(20)
+        toolbar_layout.addWidget(btn_load_json)
+        toolbar_layout.addWidget(btn_save_json)
         toolbar_layout.addStretch()
 
-        btn_remove_selected = QPushButton("移除选中")
-        btn_remove_selected.clicked.connect(self.remove_selected)
-        toolbar_layout.addWidget(btn_remove_selected)
+        # 右侧按钮组
+        btn_remove = self._create_tool_button("移除选中", "#ff6b6b")
+        btn_remove.clicked.connect(self.remove_selected)
 
-        btn_clear = QPushButton("清空列表")
+        btn_clear = self._create_tool_button("清空列表", "#ff6b6b")
         btn_clear.clicked.connect(self.clear_videos)
+
+        toolbar_layout.addWidget(btn_remove)
         toolbar_layout.addWidget(btn_clear)
 
-        main_layout.addLayout(toolbar_layout)
+        main_layout.addWidget(toolbar_widget)
 
-        # 使用分割器
+        # ========== 中间内容区 ==========
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: #2a2a4a;
+                width: 3px;
+            }
+            QSplitter::handle:hover {
+                background-color: #00d4ff;
+            }
+        """)
 
         # 左侧：视频列表
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
+        left_layout.setSpacing(8)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
-        # 视频统计
-        self.video_count_label = QLabel("视频数量: 0")
-        left_layout.addWidget(self.video_count_label)
+        # 视频列表标题
+        header_layout = QHBoxLayout()
+        header_label = SectionTitle("视频列表")
+        header_layout.addWidget(header_label)
+
+        self.video_count_label = QLabel("共 0 个视频")
+        self.video_count_label.setStyleSheet("color: #8b949e; font-size: 12px;")
+        header_layout.addWidget(self.video_count_label)
+        header_layout.addStretch()
+
+        left_layout.addLayout(header_layout)
 
         # 视频表格
         self.video_table = QTableWidget()
         self.video_table.setColumnCount(7)
         self.video_table.setHorizontalHeaderLabels([
-            "✓", "序号", "文件名", "时长", "分辨率", "大小", "开头视频"
+            "选择", "序号", "文件名", "时长", "分辨率", "大小", "操作"
         ])
         self.video_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.video_table.setColumnWidth(0, 30)
+        self.video_table.setColumnWidth(0, 50)
         self.video_table.setColumnWidth(1, 50)
         self.video_table.setColumnWidth(3, 80)
         self.video_table.setColumnWidth(4, 100)
         self.video_table.setColumnWidth(5, 80)
-        self.video_table.setColumnWidth(6, 100)
+        self.video_table.setColumnWidth(6, 90)
         self.video_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.video_table.setAlternatingRowColors(True)
         self.video_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.video_table.customContextMenuRequested.connect(self.show_context_menu)
+        self.video_table.verticalHeader().setVisible(False)
 
         left_layout.addWidget(self.video_table)
 
@@ -148,58 +201,72 @@ class MainWindow(QMainWindow):
         # 右侧：设置面板
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
+        right_layout.setSpacing(10)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
-        # 合成配置组
-        config_group = QGroupBox("合成配置")
+        # 使用滚动区域
+        from PyQt5.QtWidgets import QScrollArea
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+        """)
+
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setSpacing(12)
+        scroll_layout.setContentsMargins(8, 0, 8, 0)
+
+        # ===== 合成配置组 =====
+        config_group = self._create_group("合成配置")
         config_layout = QVBoxLayout(config_group)
+        config_layout.setSpacing(10)
 
         # 开头视频设置
-        start_layout = QHBoxLayout()
-        start_layout.addWidget(QLabel("开头视频:"))
-
+        config_layout.addWidget(self._create_label("开头模式"))
         self.start_mode_combo = QComboBox()
-        self.start_mode_combo.addItems(["不指定（按顺序轮流）", "指定开头视频", "随机选择开头"])
+        self.start_mode_combo.addItems(["按顺序轮流", "指定开头视频", "随机选择开头"])
         self.start_mode_combo.currentIndexChanged.connect(self.on_start_mode_changed)
-        start_layout.addWidget(self.start_mode_combo)
-
-        config_layout.addLayout(start_layout)
+        config_layout.addWidget(self.start_mode_combo)
 
         # 指定开头视频选择
-        self.start_video_layout = QHBoxLayout()
-        self.start_video_layout.addWidget(QLabel("选择开头:"))
+        self.start_video_widget = QWidget()
+        start_video_layout = QHBoxLayout(self.start_video_widget)
+        start_video_layout.setContentsMargins(0, 0, 0, 0)
+        start_video_layout.setSpacing(8)
 
         self.start_video_combo = QComboBox()
-        self.start_video_combo.setMinimumWidth(200)
-        self.start_video_layout.addWidget(self.start_video_combo)
+        self.start_video_combo.setMinimumWidth(150)
+        start_video_layout.addWidget(self.start_video_combo, 1)
 
-        self.btn_set_start = QPushButton("设为开头")
+        self.btn_set_start = QPushButton("确认")
         self.btn_set_start.clicked.connect(self.set_start_video)
-        self.start_video_layout.addWidget(self.btn_set_start)
+        start_video_layout.addWidget(self.btn_set_start)
 
-        config_layout.addLayout(self.start_video_layout)
+        config_layout.addWidget(self.start_video_widget)
+        self.start_video_widget.setVisible(False)
 
         # 每组片段数
-        group_layout = QHBoxLayout()
-        group_layout.addWidget(QLabel("每组片段数:"))
-
+        config_layout.addWidget(self._create_label("每组片段数"))
         self.group_size_spin = QSpinBox()
         self.group_size_spin.setRange(2, 20)
         self.group_size_spin.setValue(2)
         self.group_size_spin.valueChanged.connect(self.update_estimate)
-        group_layout.addWidget(self.group_size_spin)
-
-        group_layout.addStretch()
-        config_layout.addLayout(group_layout)
+        config_layout.addWidget(self.group_size_spin)
 
         # 合成数量
+        config_layout.addWidget(self._create_label("合成数量"))
         count_layout = QHBoxLayout()
-        count_layout.addWidget(QLabel("合成数量:"))
+        count_layout.setSpacing(8)
 
         self.count_mode_combo = QComboBox()
         self.count_mode_combo.addItems(["全部组合", "自定义数量"])
         self.count_mode_combo.currentIndexChanged.connect(self.on_count_mode_changed)
-        count_layout.addWidget(self.count_mode_combo)
+        count_layout.addWidget(self.count_mode_combo, 1)
 
         self.count_spin = QSpinBox()
         self.count_spin.setRange(1, 10000)
@@ -210,45 +277,54 @@ class MainWindow(QMainWindow):
         config_layout.addLayout(count_layout)
 
         # 预计合成数
-        self.estimate_label = QLabel("预计合成数量: 0")
+        self.estimate_label = QLabel("预计合成: 0 个")
+        self.estimate_label.setStyleSheet("""
+            QLabel {
+                background-color: #1a1a3e;
+                border: 1px dashed #3a3a5a;
+                border-radius: 6px;
+                padding: 8px;
+                color: #00d4ff;
+                font-weight: bold;
+            }
+        """)
         config_layout.addWidget(self.estimate_label)
 
-        # 文件命名
-        name_layout = QHBoxLayout()
-        name_layout.addWidget(QLabel("文件前缀:"))
-
+        # 文件前缀
+        config_layout.addWidget(self._create_label("文件前缀"))
         self.prefix_edit = QLineEdit("合成视频")
-        name_layout.addWidget(self.prefix_edit)
-
-        config_layout.addLayout(name_layout)
+        config_layout.addWidget(self.prefix_edit)
 
         # 输出目录
+        config_layout.addWidget(self._create_label("输出目录"))
         output_layout = QHBoxLayout()
-        output_layout.addWidget(QLabel("输出目录:"))
+        output_layout.setSpacing(8)
 
         self.output_dir_edit = QLineEdit()
-        output_layout.addWidget(self.output_dir_edit)
+        self.output_dir_edit.setPlaceholderText("请选择输出目录...")
+        output_layout.addWidget(self.output_dir_edit, 1)
 
-        btn_select_dir = QPushButton("选择")
+        btn_select_dir = QPushButton("浏览")
         btn_select_dir.clicked.connect(self.select_output_dir)
         output_layout.addWidget(btn_select_dir)
 
         config_layout.addLayout(output_layout)
 
-        right_layout.addWidget(config_group)
+        scroll_layout.addWidget(config_group)
 
-        # 预处理设置组
-        preprocess_group = QGroupBox("预处理设置（可选）")
+        # ===== 预处理设置组 =====
+        preprocess_group = self._create_group("预处理设置")
         preprocess_layout = QVBoxLayout(preprocess_group)
+        preprocess_layout.setSpacing(10)
 
         # 统一分辨率
         self.enable_resolution_cb = QCheckBox("统一分辨率")
         self.enable_resolution_cb.stateChanged.connect(self.on_preprocess_changed)
         preprocess_layout.addWidget(self.enable_resolution_cb)
 
-        resolution_layout = QHBoxLayout()
-        resolution_layout.addWidget(QLabel("  分辨率:"))
-
+        self.resolution_widget = QWidget()
+        resolution_layout = QHBoxLayout(self.resolution_widget)
+        resolution_layout.setContentsMargins(20, 0, 0, 0)
         self.resolution_combo = QComboBox()
         self.resolution_combo.addItems([
             "1080x1920", "1920x1080", "720x1280", "1280x720",
@@ -256,93 +332,83 @@ class MainWindow(QMainWindow):
         ])
         self.resolution_combo.setEnabled(False)
         resolution_layout.addWidget(self.resolution_combo)
-
-        resolution_layout.addStretch()
-        preprocess_layout.addLayout(resolution_layout)
+        preprocess_layout.addWidget(self.resolution_widget)
+        self.resolution_widget.setVisible(False)
 
         # 统一帧率
         self.enable_fps_cb = QCheckBox("统一帧率")
         self.enable_fps_cb.stateChanged.connect(self.on_preprocess_changed)
         preprocess_layout.addWidget(self.enable_fps_cb)
 
-        fps_layout = QHBoxLayout()
-        fps_layout.addWidget(QLabel("  帧率:"))
-
+        self.fps_widget = QWidget()
+        fps_layout = QHBoxLayout(self.fps_widget)
+        fps_layout.setContentsMargins(20, 0, 0, 0)
         self.fps_spin = QSpinBox()
         self.fps_spin.setRange(10, 120)
         self.fps_spin.setValue(30)
         self.fps_spin.setEnabled(False)
         fps_layout.addWidget(self.fps_spin)
         fps_layout.addWidget(QLabel("fps"))
-
         fps_layout.addStretch()
-        preprocess_layout.addLayout(fps_layout)
+        preprocess_layout.addWidget(self.fps_widget)
+        self.fps_widget.setVisible(False)
 
         # 编码设置
+        preprocess_layout.addWidget(self._create_label("编码设置"))
         codec_layout = QHBoxLayout()
-        codec_layout.addWidget(QLabel("编码器:"))
+        codec_layout.setSpacing(8)
 
         self.codec_combo = QComboBox()
         self.codec_combo.addItems(["H.264", "H.265"])
         codec_layout.addWidget(self.codec_combo)
 
-        codec_layout.addWidget(QLabel("质量:"))
-
         self.quality_combo = QComboBox()
-        self.quality_combo.addItems(["高", "中", "低"])
+        self.quality_combo.addItems(["高质量", "中等质量", "低质量"])
         self.quality_combo.setCurrentIndex(0)
         codec_layout.addWidget(self.quality_combo)
 
-        codec_layout.addStretch()
         preprocess_layout.addLayout(codec_layout)
 
-        # 硬件加速设置
-        hw_layout = QHBoxLayout()
-        hw_layout.addWidget(QLabel("硬件加速:"))
-
+        # 硬件加速
+        preprocess_layout.addWidget(self._create_label("硬件加速"))
         self.hw_accel_combo = QComboBox()
-        self.hw_accel_combo.addItems(["自动检测", "NVIDIA显卡(NVENC)", "CPU软编码"])
+        self.hw_accel_combo.addItems(["自动检测", "NVIDIA显卡 (NVENC)", "CPU软编码"])
         self.hw_accel_combo.setToolTip("自动检测会优先使用NVIDIA显卡加速")
-        hw_layout.addWidget(self.hw_accel_combo)
+        preprocess_layout.addWidget(self.hw_accel_combo)
 
-        hw_layout.addStretch()
-        preprocess_layout.addLayout(hw_layout)
+        scroll_layout.addWidget(preprocess_group)
 
-        right_layout.addWidget(preprocess_group)
-
-        # 转场效果组
-        transition_group = QGroupBox("转场效果")
+        # ===== 转场效果组 =====
+        transition_group = self._create_group("转场效果")
         transition_layout = QVBoxLayout(transition_group)
+        transition_layout.setSpacing(10)
 
         # 转场类型
-        trans_type_layout = QHBoxLayout()
-        trans_type_layout.addWidget(QLabel("转场类型:"))
-
+        transition_layout.addWidget(self._create_label("转场类型"))
         self.transition_combo = QComboBox()
         self.transition_combo.addItems([
             "无转场",
-            "淡入淡出 (fade)",
-            "溶解 (dissolve)",
-            "向左擦除 (wipe_left)",
-            "向右擦除 (wipe_right)",
-            "向左滑动 (slide_left)",
-            "向右滑动 (slide_right)",
-            "向左平滑 (smooth_left)",
-            "向右平滑 (smooth_right)",
-            "圆形打开 (circle_open)",
-            "圆形关闭 (circle_close)",
-            "像素化 (pixelize)",
-            "径向 (radial)",
-            "对角线 (diag_bl)",
-            "对角线 (diag_br)"
+            "淡入淡出",
+            "溶解",
+            "向左擦除",
+            "向右擦除",
+            "向左滑动",
+            "向右滑动",
+            "向左平滑",
+            "向右平滑",
+            "圆形打开",
+            "圆形关闭",
+            "像素化",
+            "径向",
+            "左下对角线",
+            "右下对角线"
         ])
-        trans_type_layout.addWidget(self.transition_combo)
-
-        transition_layout.addLayout(trans_type_layout)
+        transition_layout.addWidget(self.transition_combo)
 
         # 转场时长
+        transition_layout.addWidget(self._create_label("转场时长"))
         trans_dur_layout = QHBoxLayout()
-        trans_dur_layout.addWidget(QLabel("转场时长:"))
+        trans_dur_layout.setSpacing(8)
 
         self.transition_duration_spin = QDoubleSpinBox()
         self.transition_duration_spin.setRange(0.1, 3.0)
@@ -350,61 +416,144 @@ class MainWindow(QMainWindow):
         self.transition_duration_spin.setSingleStep(0.1)
         self.transition_duration_spin.setSuffix(" 秒")
         trans_dur_layout.addWidget(self.transition_duration_spin)
-
         trans_dur_layout.addStretch()
+
         transition_layout.addLayout(trans_dur_layout)
 
-        # 转场说明
-        transition_info = QLabel("提示：转场效果会让视频过渡更自然，但会增加处理时间")
-        transition_info.setStyleSheet("color: gray; font-size: 11px;")
-        transition_info.setWordWrap(True)
-        transition_layout.addWidget(transition_info)
+        # 提示
+        hint_label = QLabel("转场效果让视频过渡更自然，但会增加处理时间")
+        hint_label.setObjectName("label_hint")
+        hint_label.setWordWrap(True)
+        transition_layout.addWidget(hint_label)
 
-        right_layout.addWidget(transition_group)
+        scroll_layout.addWidget(transition_group)
 
-        # 操作按钮
-        btn_layout = QHBoxLayout()
+        scroll_layout.addStretch()
 
-        self.btn_preview = QPushButton("预览合成方案")
+        scroll_area.setWidget(scroll_content)
+        right_layout.addWidget(scroll_area)
+
+        # ===== 操作按钮区 =====
+        btn_widget = QWidget()
+        btn_widget.setStyleSheet("""
+            QWidget {
+                background-color: #16213e;
+                border-radius: 8px;
+                padding: 8px;
+            }
+        """)
+        btn_layout = QHBoxLayout(btn_widget)
+        btn_layout.setSpacing(12)
+        btn_layout.setContentsMargins(12, 12, 12, 12)
+
+        self.btn_preview = QPushButton("预览方案")
+        self.btn_preview.setObjectName("btn_preview")
         self.btn_preview.clicked.connect(self.preview_combinations)
         btn_layout.addWidget(self.btn_preview)
 
         self.btn_start = QPushButton("开始合成")
-        self.btn_start.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")
+        self.btn_start.setObjectName("btn_start")
         self.btn_start.clicked.connect(self.start_merge)
         btn_layout.addWidget(self.btn_start)
 
         self.btn_cancel = QPushButton("取消")
+        self.btn_cancel.setObjectName("btn_cancel")
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.clicked.connect(self.cancel_merge)
         btn_layout.addWidget(self.btn_cancel)
 
-        right_layout.addLayout(btn_layout)
+        right_layout.addWidget(btn_widget)
 
-        # 进度条
+        # 进度区
+        progress_widget = QWidget()
+        progress_layout = QVBoxLayout(progress_widget)
+        progress_layout.setSpacing(6)
+        progress_layout.setContentsMargins(0, 0, 0, 0)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
-        right_layout.addWidget(self.progress_bar)
+        self.progress_bar.setTextVisible(True)
+        progress_layout.addWidget(self.progress_bar)
 
         self.progress_label = QLabel("就绪")
-        right_layout.addWidget(self.progress_label)
+        self.progress_label.setAlignment(Qt.AlignCenter)
+        self.progress_label.setStyleSheet("color: #8b949e; font-size: 11px;")
+        progress_layout.addWidget(self.progress_label)
+
+        right_layout.addWidget(progress_widget)
 
         splitter.addWidget(right_widget)
 
         # 设置分割器比例
-        splitter.setSizes([600, 400])
-        main_layout.addWidget(splitter)
+        splitter.setSizes([650, 450])
+        main_layout.addWidget(splitter, 1)
 
-        # 日志区域
-        log_group = QGroupBox("日志")
+        # ========== 底部日志区 ==========
+        log_group = QGroupBox("运行日志")
+        log_group.setStyleSheet("""
+            QGroupBox {
+                background-color: #0d1117;
+                border: 1px solid #2a2a4a;
+                border-radius: 8px;
+                margin-top: 14px;
+                padding-top: 16px;
+            }
+        """)
         log_layout = QVBoxLayout(log_group)
+        log_layout.setContentsMargins(8, 8, 8, 8)
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(150)
+        self.log_text.setMaximumHeight(160)
+        self.log_text.setStyleSheet("""
+            QTextEdit {
+                background-color: #0d1117;
+                color: #8b949e;
+                border: none;
+                font-family: "Cascadia Code", "Consolas", "Microsoft YaHei", monospace;
+                font-size: 11px;
+            }
+        """)
         log_layout.addWidget(self.log_text)
 
         main_layout.addWidget(log_group)
+
+        # 初始化日志
+        self.log("程序已启动，等待操作...")
+        self.log("提示：点击「添加文件」或「添加文件夹」导入视频")
+
+    def _create_tool_button(self, text, color="#e0e0e0"):
+        """创建工具栏按钮"""
+        btn = QPushButton(text)
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {color};
+                border: 1px solid {color}40;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                min-width: 70px;
+            }}
+            QPushButton:hover {{
+                background-color: {color}20;
+                border-color: {color};
+            }}
+        """)
+        return btn
+
+    def _create_group(self, title):
+        """创建分组框"""
+        group = QGroupBox(title)
+        return group
+
+    def _create_label(self, text):
+        """创建标签"""
+        label = QLabel(text)
+        label.setStyleSheet("color: #b0b0c0; font-size: 11px; font-weight: bold;")
+        return label
+
+    # ========== 以下为原有功能逻辑，保持不变 ==========
 
     def add_video_files(self):
         """添加视频文件"""
@@ -540,7 +689,10 @@ class MainWindow(QMainWindow):
             self.video_table.setItem(row, 1, QTableWidgetItem(str(video.序号)))
 
             # 文件名
-            self.video_table.setItem(row, 2, QTableWidgetItem(video.视频文件名称带扩展))
+            name_item = QTableWidgetItem(video.视频文件名称带扩展)
+            if video.是否开头视频:
+                name_item.setForeground(QColor("#00d4ff"))
+            self.video_table.setItem(row, 2, name_item)
 
             # 时长
             self.video_table.setItem(row, 3, QTableWidgetItem(video.视频时长))
@@ -551,13 +703,15 @@ class MainWindow(QMainWindow):
             # 大小
             self.video_table.setItem(row, 5, QTableWidgetItem(video.视频大小))
 
-            # 开头视频按钮
+            # 操作按钮
             btn = QPushButton("设为开头")
             btn.setProperty("row", row)
             btn.clicked.connect(lambda checked, r=row: self.set_start_from_table(r))
+            if video.是否开头视频:
+                btn.setStyleSheet("background-color: #00d4ff; color: #1a1a2e;")
             self.video_table.setCellWidget(row, 6, btn)
 
-        self.video_count_label.setText(f"视频数量: {len(self.videos)}")
+        self.video_count_label.setText(f"共 {len(self.videos)} 个视频")
         self.update_estimate()
 
     def update_start_video_combo(self):
@@ -621,8 +775,7 @@ class MainWindow(QMainWindow):
 
     def on_start_mode_changed(self, index):
         """开头模式改变"""
-        self.start_video_combo.setEnabled(index == 1)
-        self.btn_set_start.setEnabled(index == 1)
+        self.start_video_widget.setVisible(index == 1)
         self.update_estimate()
 
     def on_count_mode_changed(self, index):
@@ -632,13 +785,15 @@ class MainWindow(QMainWindow):
 
     def on_preprocess_changed(self):
         """预处理设置改变"""
+        self.resolution_widget.setVisible(self.enable_resolution_cb.isChecked())
         self.resolution_combo.setEnabled(self.enable_resolution_cb.isChecked())
+        self.fps_widget.setVisible(self.enable_fps_cb.isChecked())
         self.fps_spin.setEnabled(self.enable_fps_cb.isChecked())
 
     def update_estimate(self):
         """更新预计合成数量"""
         if not self.videos:
-            self.estimate_label.setText("预计合成数量: 0")
+            self.estimate_label.setText("预计合成: 0 个")
             return
 
         selected_videos = [v for v in self.videos if v.是否选择]
@@ -655,9 +810,9 @@ class MainWindow(QMainWindow):
 
         if self.count_mode_combo.currentIndex() == 1:
             count = min(estimate, self.count_spin.value())
-            self.estimate_label.setText(f"预计合成数量: {count}")
+            self.estimate_label.setText(f"预计合成: {count} 个")
         else:
-            self.estimate_label.setText(f"预计合成数量: {estimate}")
+            self.estimate_label.setText(f"预计合成: {estimate} 个")
 
     def select_output_dir(self):
         """选择输出目录"""
@@ -693,7 +848,7 @@ class MainWindow(QMainWindow):
         # 显示预览
         preview_text = "合成方案预览（前10个）:\n\n"
         for idx, combo in enumerate(combos, 1):
-            names = [v.视频文件名称 for v in combo]
+            names = [v.视频文件名称[:20] for v in combo]
             preview_text += f"{idx}. {' + '.join(names)}\n"
 
         QMessageBox.information(self, "合成方案预览", preview_text)
@@ -746,9 +901,9 @@ class MainWindow(QMainWindow):
         if start_video and combos:
             for i, combo in enumerate(combos[:3]):
                 if combo[0].视频路径 == start_video.视频路径:
-                    self.log(f"  组合{i+1}: ✓ 开头正确 - {combo[0].视频文件名称}")
+                    self.log(f"  组合{i+1}: [OK] 开头正确 - {combo[0].视频文件名称}")
                 else:
-                    self.log(f"  组合{i+1}: ✗ 开头错误 - {combo[0].视频文件名称}")
+                    self.log(f"  组合{i+1}: [ERR] 开头错误 - {combo[0].视频文件名称}")
 
         if not combos:
             QMessageBox.warning(self, "警告", "无法生成合成方案")
@@ -819,8 +974,6 @@ class MainWindow(QMainWindow):
         overall_progress = int(((current - 1) / total + progress / total) * 100)
         self.progress_bar.setValue(overall_progress)
         self.progress_label.setText(f"[{current}/{total}] {status}")
-        # 同时输出到日志
-        self.log(f"[{current}/{total}] {status}")
 
     def on_merge_finished(self, success, fail, files, reasons):
         """合成完成"""
@@ -838,12 +991,14 @@ class MainWindow(QMainWindow):
             self.log(f"输出目录: {os.path.dirname(files[0])}")
             self.log(f"成功文件:")
             for f in files:
-                self.log(f"  ✓ {os.path.basename(f)}")
+                self.log(f"  [OK] {os.path.basename(f)}")
 
         if reasons:
             self.log(f"失败原因:")
             for r in reasons:
-                self.log(f"  ✗ {r}")
+                self.log(f"  [ERR] {r}")
+
+        self.progress_label.setText(f"完成 - 成功: {success}, 失败: {fail}")
 
         QMessageBox.information(
             self, "完成",
