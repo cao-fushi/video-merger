@@ -66,6 +66,8 @@ def _get_encoder_cmd(config: MergeConfig) -> list:
         crf = quality_map.get(config.quality, "23")
         cmd.extend(['-crf', crf, '-preset', 'medium'])
 
+    # 关键：指定像素格式为yuv420p，确保兼容性
+    cmd.extend(['-pix_fmt', 'yuv420p'])
     cmd.extend(['-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart'])
     return cmd
 

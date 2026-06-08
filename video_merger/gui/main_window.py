@@ -57,12 +57,12 @@ class SectionTitle(QLabel):
         self.setObjectName("label_title")
         self.setStyleSheet("""
             QLabel#label_title {
-                color: #00d4ff;
-                font-size: 13px;
+                color: #0984e3;
+                font-size: 14px;
                 font-weight: bold;
-                padding: 4px 0px;
-                border-bottom: 2px solid #00d4ff;
-                margin-bottom: 8px;
+                padding: 6px 0px;
+                border-bottom: 3px solid #0984e3;
+                margin-bottom: 10px;
             }
         """)
 
@@ -104,8 +104,9 @@ class MainWindow(QMainWindow):
         toolbar_widget = QWidget()
         toolbar_widget.setStyleSheet("""
             QWidget {
-                background-color: #16213e;
-                border-radius: 8px;
+                background-color: #ffffff;
+                border: 1px solid #e0e0e0;
+                border-radius: 10px;
                 padding: 8px;
             }
         """)
@@ -169,7 +170,7 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(header_label)
 
         self.video_count_label = QLabel("共 0 个视频")
-        self.video_count_label.setStyleSheet("color: #8b949e; font-size: 12px;")
+        self.video_count_label.setStyleSheet("color: #636e72; font-size: 12px;")
         header_layout.addWidget(self.video_count_label)
         header_layout.addStretch()
 
@@ -280,12 +281,13 @@ class MainWindow(QMainWindow):
         self.estimate_label = QLabel("预计合成: 0 个")
         self.estimate_label.setStyleSheet("""
             QLabel {
-                background-color: #1a1a3e;
-                border: 1px dashed #3a3a5a;
-                border-radius: 6px;
-                padding: 8px;
-                color: #00d4ff;
+                background-color: #e8f4fd;
+                border: 2px dashed #0984e3;
+                border-radius: 8px;
+                padding: 10px;
+                color: #0984e3;
                 font-weight: bold;
+                font-size: 13px;
             }
         """)
         config_layout.addWidget(self.estimate_label)
@@ -437,8 +439,9 @@ class MainWindow(QMainWindow):
         btn_widget = QWidget()
         btn_widget.setStyleSheet("""
             QWidget {
-                background-color: #16213e;
-                border-radius: 8px;
+                background-color: #ffffff;
+                border: 1px solid #e0e0e0;
+                border-radius: 10px;
                 padding: 8px;
             }
         """)
@@ -477,7 +480,7 @@ class MainWindow(QMainWindow):
 
         self.progress_label = QLabel("就绪")
         self.progress_label.setAlignment(Qt.AlignCenter)
-        self.progress_label.setStyleSheet("color: #8b949e; font-size: 11px;")
+        self.progress_label.setStyleSheet("color: #636e72; font-size: 12px;")
         progress_layout.addWidget(self.progress_label)
 
         right_layout.addWidget(progress_widget)
@@ -492,26 +495,28 @@ class MainWindow(QMainWindow):
         log_group = QGroupBox("运行日志")
         log_group.setStyleSheet("""
             QGroupBox {
-                background-color: #0d1117;
-                border: 1px solid #2a2a4a;
-                border-radius: 8px;
-                margin-top: 14px;
-                padding-top: 16px;
+                background-color: #ffffff;
+                border: 1px solid #e0e0e0;
+                border-radius: 10px;
+                margin-top: 16px;
+                padding-top: 18px;
             }
         """)
         log_layout = QVBoxLayout(log_group)
-        log_layout.setContentsMargins(8, 8, 8, 8)
+        log_layout.setContentsMargins(10, 10, 10, 10)
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setMaximumHeight(160)
         self.log_text.setStyleSheet("""
             QTextEdit {
-                background-color: #0d1117;
-                color: #8b949e;
-                border: none;
+                background-color: #f8f9fa;
+                color: #2d3436;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
                 font-family: "Cascadia Code", "Consolas", "Microsoft YaHei", monospace;
                 font-size: 11px;
+                padding: 10px;
             }
         """)
         log_layout.addWidget(self.log_text)
@@ -522,22 +527,22 @@ class MainWindow(QMainWindow):
         self.log("程序已启动，等待操作...")
         self.log("提示：点击「添加文件」或「添加文件夹」导入视频")
 
-    def _create_tool_button(self, text, color="#e0e0e0"):
+    def _create_tool_button(self, text, color="#0984e3"):
         """创建工具栏按钮"""
         btn = QPushButton(text)
         btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: transparent;
+                background-color: #ffffff;
                 color: {color};
-                border: 1px solid {color}40;
-                border-radius: 6px;
+                border: 2px solid {color};
+                border-radius: 8px;
                 padding: 8px 16px;
                 font-weight: bold;
                 min-width: 70px;
             }}
             QPushButton:hover {{
-                background-color: {color}20;
-                border-color: {color};
+                background-color: {color};
+                color: #ffffff;
             }}
         """)
         return btn
@@ -691,7 +696,8 @@ class MainWindow(QMainWindow):
             # 文件名
             name_item = QTableWidgetItem(video.视频文件名称带扩展)
             if video.是否开头视频:
-                name_item.setForeground(QColor("#00d4ff"))
+                name_item.setForeground(QColor("#0984e3"))
+                name_item.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
             self.video_table.setItem(row, 2, name_item)
 
             # 时长
@@ -708,7 +714,31 @@ class MainWindow(QMainWindow):
             btn.setProperty("row", row)
             btn.clicked.connect(lambda checked, r=row: self.set_start_from_table(r))
             if video.是否开头视频:
-                btn.setStyleSheet("background-color: #00d4ff; color: #1a1a2e;")
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #0984e3;
+                        color: #ffffff;
+                        border: none;
+                        border-radius: 6px;
+                        padding: 6px 12px;
+                        font-weight: bold;
+                    }
+                """)
+            else:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #ffffff;
+                        color: #0984e3;
+                        border: 2px solid #0984e3;
+                        border-radius: 6px;
+                        padding: 6px 12px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #0984e3;
+                        color: #ffffff;
+                    }
+                """)
             self.video_table.setCellWidget(row, 6, btn)
 
         self.video_count_label.setText(f"共 {len(self.videos)} 个视频")
