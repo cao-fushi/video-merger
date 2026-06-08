@@ -8,10 +8,24 @@ from typing import Optional, Tuple
 FFMPEG_PATH = None  # 例如: "C:/ffmpeg/bin/ffmpeg.exe"
 FFPROBE_PATH = None  # 例如: "C:/ffmpeg/bin/ffprobe.exe"
 
-# 常见的FFmpeg安装位置
+
+def _get_imageio_ffmpeg_path() -> str:
+    """获取imageio-ffmpeg包中的FFmpeg路径（完整版）"""
+    try:
+        import imageio_ffmpeg
+        path = imageio_ffmpeg.get_ffmpeg_exe()
+        if os.path.exists(path):
+            return path
+    except:
+        pass
+    return ""
+
+
+# 常见的FFmpeg安装位置（优先使用完整版）
 COMMON_FFMPEG_PATHS = [
-    "D:/123/ai/TRAE SOLO CN/resources/app/bin/ffmpeg.exe",
-    "D:/123/【JianyingPro剪映_v9.9】/JianyingPro剪映_v9.9（完整包）/JianyingPro/9.9.0.13784/ffmpeg.exe",
+    # imageio-ffmpeg包中的完整版FFmpeg
+    _get_imageio_ffmpeg_path(),
+    # 其他位置
     "C:/ffmpeg/bin/ffmpeg.exe",
     "C:/Program Files/ffmpeg/bin/ffmpeg.exe",
 ]
@@ -60,6 +74,12 @@ def _find_ffprobe() -> str:
         if os.path.exists(ffprobe_path):
             FFPROBE_PATH = ffprobe_path
             return ffprobe_path
+
+    # 使用TRAE的ffprobe（精简版但ffprobe功能足够）
+    trae_ffprobe = "D:/123/ai/TRAE SOLO CN/resources/app/bin/ffprobe.exe"
+    if os.path.exists(trae_ffprobe):
+        FFPROBE_PATH = trae_ffprobe
+        return trae_ffprobe
 
     return 'ffprobe'  # 返回默认名称
 
