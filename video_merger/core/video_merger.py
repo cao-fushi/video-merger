@@ -123,7 +123,7 @@ def _get_transition_filter(transition: str, duration: float, idx: int, offset: f
 def _get_video_duration(video_path: str) -> float:
     """获取视频时长（秒）"""
     try:
-        from .ffmpeg_utils import _find_ffprobe
+        from .ffmpeg_utils import _find_ffprobe, _run_subprocess
         ffprobe = _find_ffprobe()
         cmd = [
             ffprobe, '-v', 'error',
@@ -131,7 +131,7 @@ def _get_video_duration(video_path: str) -> float:
             '-of', 'default=noprint_wrappers=1:nokey=1',
             video_path
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        result = _run_subprocess(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
             return float(result.stdout.strip())
     except:
@@ -142,7 +142,7 @@ def _get_video_duration(video_path: str) -> float:
 def _check_audio_streams(video_paths: List[str]) -> bool:
     """检查视频文件是否有音频流"""
     try:
-        from .ffmpeg_utils import _find_ffprobe
+        from .ffmpeg_utils import _find_ffprobe, _run_subprocess
         ffprobe = _find_ffprobe()
         # 只检查第一个视频
         cmd = [
@@ -152,7 +152,7 @@ def _check_audio_streams(video_paths: List[str]) -> bool:
             '-of', 'csv=p=0',
             video_paths[0]
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        result = _run_subprocess(cmd, capture_output=True, text=True, timeout=30)
         return 'audio' in result.stdout
     except:
         pass
