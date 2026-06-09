@@ -3,6 +3,7 @@ import os
 import sys
 import subprocess
 import shutil
+import tempfile
 import logging
 from typing import Dict, List, Tuple
 
@@ -15,6 +16,7 @@ class SystemChecker:
     def __init__(self):
         self.results = []
         self.all_passed = True
+        self.critical_passed = True  # 关键检查是否通过
 
     def check_all(self) -> Tuple[bool, List[Dict]]:
         """
@@ -25,49 +27,69 @@ class SystemChecker:
         """
         self.results = []
         self.all_passed = True
+        self.critical_passed = True
 
-        # 检查FFmpeg
+        # 1. 检查FFmpeg（关键）
         self._check_ffmpeg()
 
-        # 检查FFprobe
+        # 2. 检查FFprobe（关键）
         self._check_ffprobe()
 
-        # 检查NVIDIA显卡
-        self._check_nvidia_gpu()
+        # 3. 实际测试视频合成功能（关键）
+        self._test_video_merge()
 
-        # 检查NVENC支持
-        self._check_nvenc_support()
+        # 4. 实际测试导出像素格式（关键）
+        self._test_pixel_format()
 
-        # 检查磁盘空间
+        # 5. 检测可用的硬件编码器（非关键）
+        self._check_hardware_encoders()
+
+        # 6. 检查磁盘空间
         self._check_disk_space()
 
-        # 检查写入权限
+        # 7. 检查写入权限
         self._check_write_permission()
 
         return self.all_passed, self.results
 
-    def _add_result(self, name: str, passed: bool, message: str, suggestion: str = ""):
+    def _add_result(self, name: str, passed: bool, message: str, suggestion: str = "", critical: bool = False):
         """添加检查结果"""
         self.results.append({
             "name": name,
             "passed": passed,
             "message": message,
-            "suggestion": suggestion
+            "suggestion": suggestion,
+            "critical": critical
         })
         if not passed:
             self.all_passed = False
+            if critical:
+                self.critical_passed = False
+
+    def _get_base_dir(self) -> str:
+        """获取程序基础目录"""
+        if getattr(sys, 'frozen', False):
+            return os.path.dirname(sys.executable)
+        return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     def _get_ffmpeg_path(self) -> str:
         """获取FFmpeg路径"""
-        # 从打包环境查找
-        if getattr(sys, 'frozen', False):
-            exe_dir = os.path.dirname(sys.executable)
-            internal_dir = os.path.join(exe_dir, '_internal')
+        base_dir = self._get_base_dir()
 
-            # 检查imageio_ffmpeg目录
-            ffmpeg_path = os.path.join(internal_dir, 'imageio_ffmpeg', 'binaries', 'ffmpeg-win-x86_64-v7.1.exe')
-            if os.path.exists(ffmpeg_path):
-                return ffmpeg_path
+        # 搜索路径列表
+        search_paths = [
+            os.path.join(base_dir, '_internal', 'imageio_ffmpeg', 'binaries', 'ffmpeg-win-x86_64-v7.1.exe'),
+            os.path.join(base_dir, '_internal', 'ffmpeg.exe'),
+            os.path.join(base_dir, 'ffmpeg.exe'),
+            # imageio_ffmpeg包中的FFmpeg
+            'D:/123/ai/Python310/lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe',
+            # TRAE的ffmpeg（精简版，最后选择）
+            'D:/123/ai/TRAE SOLO CN/resources/app/bin/ffmpeg.exe',
+        ]
+
+        for path in search_paths:
+            if path and os.path.exists(path):
+                return path
 
         # 从PATH查找
         path = shutil.which('ffmpeg')
@@ -78,14 +100,19 @@ class SystemChecker:
 
     def _get_ffprobe_path(self) -> str:
         """获取FFprobe路径"""
-        # 从打包环境查找
-        if getattr(sys, 'frozen', False):
-            exe_dir = os.path.dirname(sys.executable)
-            internal_dir = os.path.join(exe_dir, '_internal')
+        base_dir = self._get_base_dir()
 
-            ffprobe_path = os.path.join(internal_dir, 'ffprobe.exe')
-            if os.path.exists(ffprobe_path):
-                return ffprobe_path
+        # 搜索路径列表
+        search_paths = [
+            os.path.join(base_dir, '_internal', 'ffprobe.exe'),
+            os.path.join(base_dir, 'ffprobe.exe'),
+            # TRAE的ffprobe
+            'D:/123/ai/TRAE SOLO CN/resources/app/bin/ffprobe.exe',
+        ]
+
+        for path in search_paths:
+            if path and os.path.exists(path):
+                return path
 
         # 从PATH查找
         path = shutil.which('ffprobe')
@@ -94,107 +121,214 @@ class SystemChecker:
 
         return None
 
-    def _check_ffmpeg(self):
-        """检查FFmpeg"""
-        ffmpeg_path = self._get_ffmpeg_path()
-
-        if ffmpeg_path and os.path.exists(ffmpeg_path):
-            try:
-                result = subprocess.run(
-                    [ffmpeg_path, '-version'],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                    creationflags=0x08000000 if os.name == 'nt' else 0
-                )
-                if result.returncode == 0:
-                    version = result.stdout.split('\n')[0].strip()
-                    self._add_result("FFmpeg", True, f"已安装: {version}")
-                else:
-                    self._add_result("FFmpeg", False, "FFmpeg无法运行", "请重新安装FFmpeg")
-            except Exception as e:
-                self._add_result("FFmpeg", False, f"FFmpeg执行失败: {e}", "请重新安装FFmpeg")
-        else:
-            self._add_result("FFmpeg", False, "未找到FFmpeg", "请安装FFmpeg或重新安装本程序")
-
-    def _check_ffprobe(self):
-        """检查FFprobe"""
-        ffprobe_path = self._get_ffprobe_path()
-
-        if ffprobe_path and os.path.exists(ffprobe_path):
-            try:
-                result = subprocess.run(
-                    [ffprobe_path, '-version'],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                    creationflags=0x08000000 if os.name == 'nt' else 0
-                )
-                if result.returncode == 0:
-                    version = result.stdout.split('\n')[0].strip()
-                    self._add_result("FFprobe", True, f"已安装: {version}")
-                else:
-                    self._add_result("FFprobe", False, "FFprobe无法运行", "请重新安装FFmpeg")
-            except Exception as e:
-                self._add_result("FFprobe", False, f"FFprobe执行失败: {e}", "请重新安装FFmpeg")
-        else:
-            self._add_result("FFprobe", False, "未找到FFprobe", "请安装FFmpeg或重新安装本程序")
-
-    def _check_nvidia_gpu(self):
-        """检查NVIDIA显卡"""
+    def _run_cmd(self, cmd: list, timeout: int = 30) -> Tuple[bool, str, str]:
+        """运行命令"""
         try:
-            # 使用wmic检查显卡
             result = subprocess.run(
-                ['wmic', 'path', 'win32_videocontroller', 'get', 'name'],
+                cmd,
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=timeout,
                 creationflags=0x08000000 if os.name == 'nt' else 0
             )
-
-            if result.returncode == 0:
-                output = result.stdout.strip()
-                if 'NVIDIA' in output:
-                    # 提取显卡名称
-                    for line in output.split('\n'):
-                        if 'NVIDIA' in line:
-                            gpu_name = line.strip()
-                            self._add_result("NVIDIA显卡", True, f"检测到: {gpu_name}")
-                            return
-                else:
-                    self._add_result("NVIDIA显卡", False, "未检测到NVIDIA显卡", "将使用CPU编码（速度较慢）")
-            else:
-                self._add_result("NVIDIA显卡", False, "无法检测显卡信息", "将使用CPU编码")
-
+            return result.returncode == 0, result.stdout, result.stderr
         except Exception as e:
-            self._add_result("NVIDIA显卡", False, f"显卡检测失败: {e}", "将使用CPU编码")
+            return False, "", str(e)
 
-    def _check_nvenc_support(self):
-        """检查NVENC支持"""
+    def _check_ffmpeg(self):
+        """检查FFmpeg是否可用"""
         ffmpeg_path = self._get_ffmpeg_path()
-        if not ffmpeg_path:
-            self._add_result("NVENC编码", False, "FFmpeg未找到", "无法使用硬件加速")
+
+        if not ffmpeg_path or not os.path.exists(ffmpeg_path):
+            self._add_result("FFmpeg", False, "未找到FFmpeg", "请重新安装本程序", critical=True)
             return
 
-        try:
-            result = subprocess.run(
-                [ffmpeg_path, '-encoders'],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                creationflags=0x08000000 if os.name == 'nt' else 0
-            )
+        # 测试FFmpeg版本
+        success, stdout, stderr = self._run_cmd([ffmpeg_path, '-version'])
+        if success:
+            version = stdout.split('\n')[0].strip()[:80]
+            self._add_result("FFmpeg", True, f"已安装: {version}", critical=True)
+        else:
+            self._add_result("FFmpeg", False, "FFmpeg无法运行", "请重新安装本程序", critical=True)
 
-            if result.returncode == 0:
-                if 'h264_nvenc' in result.stdout:
-                    self._add_result("NVENC编码", True, "支持NVIDIA硬件加速编码")
-                else:
-                    self._add_result("NVENC编码", False, "FFmpeg不支持NVENC", "将使用CPU编码")
+    def _check_ffprobe(self):
+        """检查FFprobe是否可用"""
+        ffprobe_path = self._get_ffprobe_path()
+
+        if not ffprobe_path or not os.path.exists(ffprobe_path):
+            self._add_result("FFprobe", False, "未找到FFprobe", "请重新安装本程序", critical=True)
+            return
+
+        # 测试FFprobe版本
+        success, stdout, stderr = self._run_cmd([ffprobe_path, '-version'])
+        if success:
+            version = stdout.split('\n')[0].strip()[:80]
+            self._add_result("FFprobe", True, f"已安装: {version}", critical=True)
+        else:
+            self._add_result("FFprobe", False, "FFprobe无法运行", "请重新安装本程序", critical=True)
+
+    def _test_video_merge(self):
+        """实际测试视频合成功能"""
+        ffmpeg_path = self._get_ffmpeg_path()
+        ffprobe_path = self._get_ffprobe_path()
+
+        if not ffmpeg_path or not ffprobe_path:
+            self._add_result("视频合成", False, "FFmpeg或FFprobe不可用", "请重新安装本程序", critical=True)
+            return
+
+        test_dir = tempfile.mkdtemp()
+        test_video1 = os.path.join(test_dir, 'test1.mp4')
+        test_video2 = os.path.join(test_dir, 'test2.mp4')
+        output_video = os.path.join(test_dir, 'output.mp4')
+
+        try:
+            # 创建测试视频
+            self._run_cmd([
+                ffmpeg_path, '-y', '-f', 'lavfi', '-i', 'color=c=red:s=320x240:d=1:r=25',
+                '-c:v', 'libx264', '-pix_fmt', 'yuv420p', test_video1
+            ])
+            self._run_cmd([
+                ffmpeg_path, '-y', '-f', 'lavfi', '-i', 'color=c=blue:s=320x240:d=1:r=25',
+                '-c:v', 'libx264', '-pix_fmt', 'yuv420p', test_video2
+            ])
+
+            if not os.path.exists(test_video1) or not os.path.exists(test_video2):
+                self._add_result("视频合成", False, "无法创建测试视频", "请重新安装本程序", critical=True)
+                return
+
+            # 测试concat合并
+            filelist = os.path.join(test_dir, 'list.txt')
+            with open(filelist, 'w') as f:
+                f.write(f"file '{test_video1}'\n")
+                f.write(f"file '{test_video2}'\n")
+
+            success, stdout, stderr = self._run_cmd([
+                ffmpeg_path, '-y', '-f', 'concat', '-safe', '0', '-i', filelist,
+                '-c:v', 'libx264', '-pix_fmt', 'yuv420p', output_video
+            ])
+
+            if success and os.path.exists(output_video):
+                self._add_result("视频合成", True, "concat合并测试通过", critical=True)
             else:
-                self._add_result("NVENC编码", False, "无法检测编码器", "将使用CPU编码")
+                self._add_result("视频合成", False, "concat合并测试失败", "请重新安装本程序", critical=True)
 
         except Exception as e:
-            self._add_result("NVENC编码", False, f"检测失败: {e}", "将使用CPU编码")
+            self._add_result("视频合成", False, f"测试异常: {e}", "请重新安装本程序", critical=True)
+        finally:
+            # 清理
+            try:
+                shutil.rmtree(test_dir, ignore_errors=True)
+            except:
+                pass
+
+    def _test_pixel_format(self):
+        """测试导出视频的像素格式是否为yuv420p"""
+        ffmpeg_path = self._get_ffmpeg_path()
+        ffprobe_path = self._get_ffprobe_path()
+
+        if not ffmpeg_path or not ffprobe_path:
+            self._add_result("像素格式", False, "FFmpeg或FFprobe不可用", "请重新安装本程序", critical=True)
+            return
+
+        test_dir = tempfile.mkdtemp()
+        test_video_yuv444p = os.path.join(test_dir, 'test_yuv444p.mp4')
+        output_video = os.path.join(test_dir, 'output.mp4')
+
+        try:
+            # 创建yuv444p格式的测试视频（模拟不兼容的源视频）
+            self._run_cmd([
+                ffmpeg_path, '-y', '-f', 'lavfi', '-i', 'color=c=red:s=320x240:d=1:r=25',
+                '-c:v', 'libx264', '-pix_fmt', 'yuv444p', test_video_yuv444p
+            ])
+
+            if not os.path.exists(test_video_yuv444p):
+                self._add_result("像素格式", False, "无法创建测试视频", "请重新安装本程序", critical=True)
+                return
+
+            # 使用yuv420p导出
+            success, stdout, stderr = self._run_cmd([
+                ffmpeg_path, '-y', '-i', test_video_yuv444p,
+                '-c:v', 'libx264', '-crf', '23', '-pix_fmt', 'yuv420p',
+                output_video
+            ])
+
+            if not success or not os.path.exists(output_video):
+                self._add_result("像素格式", False, "视频导出测试失败", "请重新安装本程序", critical=True)
+                return
+
+            # 检查输出视频的像素格式
+            success, stdout, stderr = self._run_cmd([
+                ffprobe_path, '-v', 'error', '-select_streams', 'v:0',
+                '-show_entries', 'stream=pix_fmt', '-of', 'default=noprint_wrappers=1:nokey=1',
+                output_video
+            ])
+
+            if success:
+                pix_fmt = stdout.strip()
+                if pix_fmt == 'yuv420p':
+                    self._add_result("像素格式", True, "yuv420p格式测试通过", critical=True)
+                else:
+                    self._add_result("像素格式", False, f"输出格式为{pix_fmt}，应为yuv420p", "请重新安装本程序", critical=True)
+            else:
+                self._add_result("像素格式", False, "无法检测像素格式", "请重新安装本程序", critical=True)
+
+        except Exception as e:
+            self._add_result("像素格式", False, f"测试异常: {e}", "请重新安装本程序", critical=True)
+        finally:
+            # 清理
+            try:
+                shutil.rmtree(test_dir, ignore_errors=True)
+            except:
+                pass
+
+    def _check_hardware_encoders(self):
+        """检测可用的硬件编码器"""
+        ffmpeg_path = self._get_ffmpeg_path()
+        if not ffmpeg_path:
+            return
+
+        # 检测NVIDIA NVENC
+        nvenc_ok = self._test_encoder(ffmpeg_path, 'h264_nvenc')
+        if nvenc_ok:
+            self._add_result("NVIDIA NVENC", True, "支持NVIDIA硬件加速编码")
+        else:
+            self._add_result("NVIDIA NVENC", False, "不支持（需要NVIDIA显卡）")
+
+        # 检测AMD AMF
+        amf_ok = self._test_encoder(ffmpeg_path, 'h264_amf')
+        if amf_ok:
+            self._add_result("AMD AMF", True, "支持AMD硬件加速编码")
+        else:
+            self._add_result("AMD AMF", False, "不支持（需要AMD显卡）")
+
+        # 检测Intel QSV
+        qsv_ok = self._test_encoder(ffmpeg_path, 'h264_qsv')
+        if qsv_ok:
+            self._add_result("Intel QSV", True, "支持Intel核显加速编码")
+        else:
+            self._add_result("Intel QSV", False, "不支持（需要Intel核显）")
+
+    def _test_encoder(self, ffmpeg_path: str, encoder_name: str) -> bool:
+        """测试指定编码器是否可用"""
+        test_dir = tempfile.mkdtemp()
+        test_output = os.path.join(test_dir, f'{encoder_name}_test.mp4')
+
+        try:
+            success, stdout, stderr = self._run_cmd([
+                ffmpeg_path, '-y', '-f', 'lavfi', '-i', 'color=c=red:s=64x64:d=0.1',
+                '-c:v', encoder_name, '-preset', 'fast', test_output
+            ], timeout=10)
+
+            return success and os.path.exists(test_output)
+        except:
+            return False
+        finally:
+            try:
+                if os.path.exists(test_output):
+                    os.unlink(test_output)
+                os.rmdir(test_dir)
+            except:
+                pass
 
     def _check_disk_space(self, min_mb: int = 500):
         """检查磁盘空间"""
@@ -204,7 +338,6 @@ class SystemChecker:
             else:
                 exe_dir = os.getcwd()
 
-            # 获取磁盘空间
             usage = shutil.disk_usage(exe_dir)
             free_mb = usage.free // (1024 * 1024)
 
@@ -219,7 +352,6 @@ class SystemChecker:
     def _check_write_permission(self):
         """检查写入权限"""
         try:
-            # 尝试在exe目录创建临时文件
             if getattr(sys, 'frozen', False):
                 test_dir = os.path.dirname(sys.executable)
             else:
