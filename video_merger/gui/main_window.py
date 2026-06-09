@@ -519,27 +519,58 @@ class MainWindow(QMainWindow):
         # 编码器选择
         performance_layout.addWidget(self._create_form_label("编码方式"))
 
-        # 检测NVENC是否可用
+        # 检测所有可用的编码器
+        from ..core.video_merger import _check_nvenc_available, _check_amf_available, _check_qsv_available, get_best_encoder
+
         nvenc_available = _check_nvenc_available()
+        amf_available = _check_amf_available()
+        qsv_available = _check_qsv_available()
+        best_encoder = get_best_encoder()
 
         self.encoder_combo = QComboBox()
+        encoder_options = []
+        encoder_map = {}
+
+        # 添加可用的编码器选项
         if nvenc_available:
-            self.encoder_combo.addItems(["NVIDIA显卡加速 (推荐)", "仅使用CPU"])
-            self.encoder_combo.setToolTip("NVIDIA显卡加速可大幅提升合成速度")
-        else:
-            self.encoder_combo.addItems(["仅使用CPU (未检测到NVIDIA显卡)"])
-            self.encoder_combo.setEnabled(False)
-            self.encoder_combo.setToolTip("未检测到NVIDIA显卡或NVENC不支持")
+            encoder_options.append("NVIDIA显卡加速 (NVENC)")
+            encoder_map[len(encoder_options) - 1] = "nvenc"
+
+        if amf_available:
+            encoder_options.append("AMD显卡加速 (AMF)")
+            encoder_map[len(encoder_options) - 1] = "amf"
+
+        if qsv_available:
+            encoder_options.append("Intel核显加速 (QSV)")
+            encoder_map[len(encoder_options) - 1] = "qsv"
+
+        encoder_options.append("仅使用CPU")
+        encoder_map[len(encoder_options) - 1] = "cpu"
+
+        self.encoder_combo.addItems(encoder_options)
+        self.encoder_combo_map = encoder_map
+
+        # 默认选择最佳编码器
+        for idx, enc in encoder_map.items():
+            if enc == best_encoder:
+                self.encoder_combo.setCurrentIndex(idx)
+                break
 
         performance_layout.addWidget(self.encoder_combo)
 
         # 显示显卡信息
         gpu_info_label = QLabel()
         if nvenc_available:
-            gpu_info_label.setText("✅ 检测到NVIDIA显卡，支持硬件加速")
+            gpu_info_label.setText("✅ 检测到NVIDIA显卡，支持NVENC硬件加速")
+            gpu_info_label.setStyleSheet("color: #00b42a; font-size: 12px;")
+        elif amf_available:
+            gpu_info_label.setText("✅ 检测到AMD显卡，支持AMF硬件加速")
+            gpu_info_label.setStyleSheet("color: #00b42a; font-size: 12px;")
+        elif qsv_available:
+            gpu_info_label.setText("✅ 检测到Intel核显，支持QSV硬件加速")
             gpu_info_label.setStyleSheet("color: #00b42a; font-size: 12px;")
         else:
-            gpu_info_label.setText("⚠️ 未检测到NVIDIA显卡，将使用CPU编码（速度较慢）")
+            gpu_info_label.setText("⚠️ 未检测到支持的显卡，将使用CPU编码（速度较慢）")
             gpu_info_label.setStyleSheet("color: #ff7d00; font-size: 12px;")
         performance_layout.addWidget(gpu_info_label)
 
@@ -1118,13 +1149,7 @@ class MainWindow(QMainWindow):
             return
 
         # 编码器选择
-        nvenc_available = _check_nvenc_available()
-        if nvenc_available:
-            # 有NVIDIA显卡时，根据用户选择
-            hw_accel = "nvenc" if self.encoder_combo.currentIndex() == 0 else "cpu"
-        else:
-            # 没有NVIDIA显卡，使用CPU
-            hw_accel = "cpu"
+        hw_accel = self.encoder_combo_map.get(self.encoder_combo.currentIndex(), "cpu")
 
         # 转场效果
         transition_map = {

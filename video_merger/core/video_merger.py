@@ -18,42 +18,42 @@ logger = logging.getLogger(__name__)
 CREATE_NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
 
 
-def _check_nvenc_available() -> bool:
-    """检查NVENC是否真正可用（实际测试）"""
+def _test_encoder(encoder_name: str) -> bool:
+    """测试指定编码器是否能正常工作"""
     ffmpeg = _find_ffmpeg()
 
-    # 首先检查FFmpeg是否编译了NVENC支持
+    # 首先检查FFmpeg是否编译了该编码器
     try:
         result = _run_subprocess([ffmpeg, '-encoders'], capture_output=True, text=True, timeout=5)
-        if 'h264_nvenc' not in result.stdout:
+        if encoder_name not in result.stdout:
             return False
     except Exception as e:
-        logger.warning(f"检查NVENC编码器失败: {e}")
+        logger.warning(f"检查编码器 {encoder_name} 失败: {e}")
         return False
 
-    # 实际测试NVENC是否能工作
+    # 实际测试编码器是否能工作
     import tempfile
     test_dir = tempfile.mkdtemp()
-    test_output = os.path.join(test_dir, 'nvenc_test.mp4')
+    test_output = os.path.join(test_dir, f'{encoder_name}_test.mp4')
 
     try:
         cmd = [
             ffmpeg, '-y',
             '-f', 'lavfi', '-i', 'color=c=red:s=64x64:d=0.1',
-            '-c:v', 'h264_nvenc',
+            '-c:v', encoder_name,
             '-preset', 'fast',
             test_output
         ]
         result = _run_subprocess(cmd, capture_output=True, text=True, timeout=10)
 
         if result.returncode == 0 and os.path.exists(test_output):
-            logger.info("NVENC测试通过")
+            logger.info(f"{encoder_name} 测试通过")
             return True
         else:
-            logger.info(f"NVENC测试失败，将使用CPU编码")
+            logger.info(f"{encoder_name} 测试失败")
             return False
     except Exception as e:
-        logger.info(f"NVENC测试异常: {e}，将使用CPU编码")
+        logger.info(f"{encoder_name} 测试异常: {e}")
         return False
     finally:
         # 清理测试文件
@@ -63,6 +63,34 @@ def _check_nvenc_available() -> bool:
             os.rmdir(test_dir)
         except:
             pass
+
+
+def _check_nvenc_available() -> bool:
+    """检查NVIDIA NVENC是否可用"""
+    return _test_encoder('h264_nvenc')
+
+
+def _check_amf_available() -> bool:
+    """检查AMD AMF是否可用"""
+    return _test_encoder('h264_amf')
+
+
+def _check_qsv_available() -> bool:
+    """检查Intel QSV是否可用"""
+    return _test_encoder('h264_qsv')
+
+
+def get_best_encoder() -> str:
+    """自动检测最佳编码器"""
+    # 按优先级测试：NVENC > AMF > QSV > CPU
+    if _check_nvenc_available():
+        return 'nvenc'
+    elif _check_amf_available():
+        return 'amf'
+    elif _check_qsv_available():
+        return 'qsv'
+    else:
+        return 'cpu'
 
 
 @dataclass
@@ -162,15 +190,15 @@ def _check_audio_streams(video_paths: List[str]) -> bool:
 def _get_encoder_cmd(config: MergeConfig) -> list:
     """获取编码器命令参数"""
     hw_accel = config.hardware_accel
-    nvenc_available = _check_nvenc_available()
 
-    # 自动选择
-    if hw_accel == "auto" and nvenc_available:
-        hw_accel = "nvenc"
+    # 自动选择最佳编码器
+    if hw_accel == "auto":
+        hw_accel = get_best_encoder()
+        logger.info(f"自动选择编码器: {hw_accel}")
 
     cmd = []
 
-    if hw_accel == "nvenc" and nvenc_available:
+    if hw_accel == "nvenc" and _check_nvenc_available():
         # NVIDIA NVENC
         if config.codec == 'h265':
             cmd.extend(['-c:v', 'hevc_nvenc'])
@@ -180,8 +208,34 @@ def _get_encoder_cmd(config: MergeConfig) -> list:
         quality_map = {"low": "30", "medium": "25", "high": "20"}
         cq = quality_map.get(config.quality, "25")
         cmd.extend(['-cq', cq, '-preset', 'medium'])
+        logger.info("使用NVIDIA NVENC编码")
+
+    elif hw_accel == "amf" and _check_amf_available():
+        # AMD AMF
+        if config.codec == 'h265':
+            cmd.extend(['-c:v', 'hevc_amf'])
+        else:
+            cmd.extend(['-c:v', 'h264_amf'])
+
+        quality_map = {"low": "30", "medium": "25", "high": "20"}
+        quality = quality_map.get(config.quality, "25")
+        cmd.extend(['-quality', 'balanced', '-rc', 'cqp', '-qp_p', quality, '-qp_i', quality])
+        logger.info("使用AMD AMF编码")
+
+    elif hw_accel == "qsv" and _check_qsv_available():
+        # Intel QSV
+        if config.codec == 'h265':
+            cmd.extend(['-c:v', 'hevc_qsv'])
+        else:
+            cmd.extend(['-c:v', 'h264_qsv'])
+
+        quality_map = {"low": "30", "medium": "25", "high": "20"}
+        quality = quality_map.get(config.quality, "25")
+        cmd.extend(['-global_quality', quality, '-preset', 'medium'])
+        logger.info("使用Intel QSV编码")
+
     else:
-        # CPU编码
+        # CPU编码（默认）
         if config.codec == 'h265':
             cmd.extend(['-c:v', 'libx265'])
         else:
@@ -190,6 +244,7 @@ def _get_encoder_cmd(config: MergeConfig) -> list:
         quality_map = {"low": "28", "medium": "23", "high": "18"}
         crf = quality_map.get(config.quality, "23")
         cmd.extend(['-crf', crf, '-preset', 'medium'])
+        logger.info("使用CPU编码")
 
     # 关键：指定像素格式为yuv420p，确保兼容性
     cmd.extend(['-pix_fmt', 'yuv420p'])
