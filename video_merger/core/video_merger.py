@@ -19,14 +19,50 @@ CREATE_NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
 
 
 def _check_nvenc_available() -> bool:
-    """检查NVENC是否可用"""
+    """检查NVENC是否真正可用（实际测试）"""
     ffmpeg = _find_ffmpeg()
+
+    # 首先检查FFmpeg是否编译了NVENC支持
     try:
         result = _run_subprocess([ffmpeg, '-encoders'], capture_output=True, text=True, timeout=5)
-        return 'h264_nvenc' in result.stdout
+        if 'h264_nvenc' not in result.stdout:
+            return False
     except Exception as e:
-        logger.warning(f"检查NVENC失败: {e}")
+        logger.warning(f"检查NVENC编码器失败: {e}")
         return False
+
+    # 实际测试NVENC是否能工作
+    import tempfile
+    test_dir = tempfile.mkdtemp()
+    test_output = os.path.join(test_dir, 'nvenc_test.mp4')
+
+    try:
+        cmd = [
+            ffmpeg, '-y',
+            '-f', 'lavfi', '-i', 'color=c=red:s=64x64:d=0.1',
+            '-c:v', 'h264_nvenc',
+            '-preset', 'fast',
+            test_output
+        ]
+        result = _run_subprocess(cmd, capture_output=True, text=True, timeout=10)
+
+        if result.returncode == 0 and os.path.exists(test_output):
+            logger.info("NVENC测试通过")
+            return True
+        else:
+            logger.info(f"NVENC测试失败，将使用CPU编码")
+            return False
+    except Exception as e:
+        logger.info(f"NVENC测试异常: {e}，将使用CPU编码")
+        return False
+    finally:
+        # 清理测试文件
+        try:
+            if os.path.exists(test_output):
+                os.unlink(test_output)
+            os.rmdir(test_dir)
+        except:
+            pass
 
 
 @dataclass
@@ -522,10 +558,40 @@ def merge_videos(
             progress_callback(0, "格式不一致，使用filter_complex方式")
         success, msg = merge_videos_filter_complex(video_paths, output_path, config, progress_callback)
 
-    # 如果第一种方式失败，尝试另一种
+    # 如果失败，尝试回退方案
+    if not success:
+        # 检查是否是NVENC导致的失败
+        if config.hardware_accel != "cpu" and "Invalid argument" in msg:
+            if progress_callback:
+                progress_callback(0, "显卡编码失败，尝试使用CPU编码...")
+            # 回退到CPU编码
+            config_cpu = MergeConfig(
+                output_dir=config.output_dir,
+                file_prefix=config.file_prefix,
+                resolution=config.resolution,
+                fps=config.fps,
+                codec=config.codec,
+                quality=config.quality,
+                hardware_accel="cpu",
+                transition=config.transition,
+                transition_duration=config.transition_duration,
+                audio_fade=config.audio_fade,
+                audio_fade_duration=config.audio_fade_duration,
+                max_workers=config.max_workers,
+                overwrite_existing=config.overwrite_existing
+            )
+            # 重新选择合并方式
+            if has_transition or has_audio_fade:
+                success, msg = merge_videos_filter_complex(video_paths, output_path, config_cpu, progress_callback)
+            elif format_consistent and not need_preprocess:
+                success, msg = merge_videos_concat(video_paths, output_path, config_cpu, progress_callback)
+            else:
+                success, msg = merge_videos_filter_complex(video_paths, output_path, config_cpu, progress_callback)
+
+    # 如果还是失败，尝试去掉特效
     if not success:
         if progress_callback:
-            progress_callback(0, f"第一种方式失败，尝试另一种...")
+            progress_callback(0, f"尝试简化合成...")
 
         if has_transition or has_audio_fade:
             # 转场/音频淡入淡出失败，尝试不使用
