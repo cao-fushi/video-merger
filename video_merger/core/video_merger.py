@@ -31,7 +31,7 @@ def _test_encoder(encoder_name: str) -> bool:
         logger.warning(f"检查编码器 {encoder_name} 失败: {e}")
         return False
 
-    # 实际测试编码器是否能工作
+    # 实际测试编码器是否能工作（使用256x256分辨率，NVENC最小要求）
     import tempfile
     test_dir = tempfile.mkdtemp()
     test_output = os.path.join(test_dir, f'{encoder_name}_test.mp4')
@@ -39,12 +39,12 @@ def _test_encoder(encoder_name: str) -> bool:
     try:
         cmd = [
             ffmpeg, '-y',
-            '-f', 'lavfi', '-i', 'color=c=red:s=64x64:d=0.1',
+            '-f', 'lavfi', '-i', 'color=c=red:s=256x256:d=0.1:r=25',
             '-c:v', encoder_name,
             '-preset', 'fast',
             test_output
         ]
-        result = _run_subprocess(cmd, capture_output=True, text=True, timeout=10)
+        result = _run_subprocess(cmd, capture_output=True, text=True, timeout=15)
 
         if result.returncode == 0 and os.path.exists(test_output):
             logger.info(f"{encoder_name} 测试通过")

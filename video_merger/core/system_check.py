@@ -314,10 +314,11 @@ class SystemChecker:
         test_output = os.path.join(test_dir, f'{encoder_name}_test.mp4')
 
         try:
+            # 使用256x256分辨率（NVENC最小要求）
             success, stdout, stderr = self._run_cmd([
-                ffmpeg_path, '-y', '-f', 'lavfi', '-i', 'color=c=red:s=64x64:d=0.1',
+                ffmpeg_path, '-y', '-f', 'lavfi', '-i', 'color=c=red:s=256x256:d=0.1:r=25',
                 '-c:v', encoder_name, '-preset', 'fast', test_output
-            ], timeout=10)
+            ], timeout=15)
 
             return success and os.path.exists(test_output)
         except:
